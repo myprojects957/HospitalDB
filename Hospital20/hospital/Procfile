@@ -1,1 +1,1 @@
-web: gunicorn hospital.hospital_app:app
+web: gunicorn Hospital20.hospital.hospital_app:app

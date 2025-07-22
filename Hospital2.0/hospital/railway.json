@@ -1,0 +1,10 @@
+{
+  "build": {
+    "env": {
+      "FLASK_ENV": "production"
+    }
+  },
+  "deploy": {
+    "startCommand": "python hospital_app.py"
+  }
+}

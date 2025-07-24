@@ -1269,6 +1269,26 @@ def cancel_appointment(appointment_id):
     flash("Appointment cancelled successfully.")
     return redirect(url_for('dashboard_patient_view'))
 
+
+@app.route('/init-db')
+def init_db():
+    try:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                role VARCHAR(50) NOT NULL,
+                name VARCHAR(100) NOT NULL,
+                email VARCHAR(100) NOT NULL UNIQUE,
+                password VARCHAR(255) NOT NULL
+            )
+        """)
+        conn.commit()
+        return "✅ Users table created successfully."
+    except Exception as e:
+        return f"❌ Error: {e}"
+
+
+
 if __name__ == '__main__':
     port = int(os.environ.get("PORT", 10000))  # Render sets this
     app.run(host='0.0.0.0', port=port)

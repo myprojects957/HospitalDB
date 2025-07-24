@@ -7,13 +7,13 @@ from dotenv import load_dotenv
 load_dotenv()  
 app = Flask(__name__)
 
-onn = mysql.connector.connect(
+conn = mysql.connector.connect(
     host=os.getenv("MYSQL_HOST"),
     user=os.getenv("MYSQL_USER"),
     password=os.getenv("MYSQL_PASSWORD"),
     database=os.getenv("MYSQL_DATABASE"),
     port=int(os.getenv("MYSQL_PORT", 3306)),
-    ssl_disabled=False 
+    ssl_disabled=False  # Required for Aiven
 )
 
 cursor = conn.cursor(dictionary=True)

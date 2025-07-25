@@ -14,10 +14,12 @@ conn = mysql.connector.connect(
     password=os.getenv("MYSQL_PASSWORD"),
     database=os.getenv("MYSQL_DATABASE"),
     port=int(os.getenv("MYSQL_PORT", 3306)),
-    ssl_disabled=False  # Required for Aiven
+    ssl_disabled=False  
 )
 
 cursor = conn.cursor(dictionary=True)
+
+
 login_page = '''
 <!DOCTYPE html>
 <html lang="en">
@@ -509,10 +511,14 @@ dashboard_admin_template = '''
             {% endif %}
           </td>
           <td data-label="Action">
-            {% if a.status != 'done' %}
-            <form method="POST" action="/reschedule/{{ a.id }}">
-              <button type="submit" class="reschedule-btn">Reschedule</button>
-            </form>
+            {% if a.status == 'done' and not a.finalized %}
+              <form method="POST" action="/admin/finalize/{{ a.id }}">
+                <button type="submit" class="reschedule-btn">Done</button>
+              </form>
+            {% elif a.status != 'done' %}
+              <form method="POST" action="/reschedule/{{ a.id }}">
+                <button type="submit" class="reschedule-btn">Reschedule</button>
+              </form>
             {% else %}
               —
             {% endif %}
@@ -654,7 +660,7 @@ dashboard_doctor_template = '''
       color: white;
     }
 
-    .reschedule-btn {
+    .Check-btn {
       background-color: #e74c3c;
       border: none;
       padding: 6px 12px;
@@ -665,7 +671,7 @@ dashboard_doctor_template = '''
       transition: background 0.3s;
     }
 
-    .reschedule-btn:hover {
+    .Check-btn:hover {
       background-color: #c0392b;
     }
 
@@ -739,8 +745,8 @@ dashboard_doctor_template = '''
           </td>
           <td data-label="Action">
             {% if a.status != 'done' %}
-              <form method="POST" action="/doctor/reschedule/{{ a.id }}">
-                <button type="submit" class="reschedule-btn">Reschedule</button>
+              <form method="POST" action="/doctor/Check/{{ a.id }}">
+                <button type="submit" class="Check-btn">Check</button>
               </form>
             {% else %}
               —
@@ -1065,6 +1071,20 @@ book_appointment_template = '''
   <div class="card">
     <h2>Book Appointment</h2>
     <form method="POST">
+    <label for="name">Full Name:</label>
+      <input type="text" id="name" name="name" placeholder="Enter your full name" required>
+
+      <label for="age">Age:</label>
+      <input type="number" id="age" name="age" placeholder="Enter your age" min="0" required>
+
+      <label for="gender">Gender:</label>
+      <select id="gender" name="gender" required>
+        <option value="" disabled selected>-- Select gender --</option>
+        <option value="Male">Male</option>
+        <option value="Female">Female</option>
+        <option value="Other">Other</option>
+      </select>
+
       <label for="doctor">Select Doctor:</label>
       <select name="doctor_id" id="doctor" required>
         <option value="" disabled selected>-- Choose a doctor --</option>
@@ -1079,6 +1099,8 @@ book_appointment_template = '''
       <label for="time">Select Time:</label>
       <input type="text" id="time" name="time" placeholder="Choose time" required>
 
+      <div id="timePeriod">—</div>
+
       <input type="submit" value="Book Appointment">
     </form>
 
@@ -1088,20 +1110,52 @@ book_appointment_template = '''
   <!-- Flatpickr JS -->
   <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
   <script>
-    flatpickr("#date", {
-      dateFormat: "Y-m-d",
-      minDate: "today",
-      disableMobile: true
-    });
+  flatpickr("#date", {
+    dateFormat: "Y-m-d",
+    minDate: "today",
+    disableMobile: true
+  });
 
-    flatpickr("#time", {
-      enableTime: true,
-      noCalendar: true,
-      dateFormat: "h:i K",  // 12-hour format with AM/PM
-      time_24hr: false,
-      disableMobile: true
-    });
-  </script>
+  flatpickr("#time", {
+    enableTime: true,
+    noCalendar: true,
+    dateFormat: "h:i K", // 12-hour format with AM/PM
+    time_24hr: false,
+    disableMobile: true,
+    onChange: function(selectedDates, dateStr, instance) {
+      updateTimePeriod(dateStr);
+    }
+  });
+
+  function updateTimePeriod(timeStr) {
+    const timePeriodDiv = document.getElementById("timePeriod");
+    const hiddenInput = document.getElementById("time24");
+
+    if (!timeStr) {
+      timePeriodDiv.textContent = "—";
+      if (hiddenInput) hiddenInput.value = "";
+      return;
+    }
+
+    // Show 12-hour format (e.g., "02:15 PM")
+    timePeriodDiv.textContent = `You selected: ${timeStr}`;
+
+    // Convert to 24-hour format
+    const [time, meridian] = timeStr.split(" ");
+    const [hourStr, minuteStr] = time.split(":");
+    let hour = parseInt(hourStr);
+
+    if (meridian === "PM" && hour !== 12) hour += 12;
+    if (meridian === "AM" && hour === 12) hour = 0;
+
+    const hourFormatted = hour.toString().padStart(2, '0');
+    const time24 = `${hourFormatted}:${minuteStr}`;
+
+    // Store in hidden field if needed
+    if (hiddenInput) hiddenInput.value = time24;
+  }
+</script>
+
 </body>
 </html>
 '''
@@ -1171,25 +1225,26 @@ def dashboard_doctor_view():
                p.name AS patient_name 
         FROM appointments a 
         JOIN users p ON a.patient_id = p.id 
-        WHERE a.doctor_id = %s
-    ''', (doctor_id,))  # ✅ Pass the value as a tuple
+        WHERE a.doctor_id = %s AND a.finalized = FALSE
+    ''', (doctor_id,))
     appointments = cursor.fetchall()
     return render_template_string(dashboard_doctor_template, appointments=appointments)
 
 @app.route('/dashboard_patient')
 def dashboard_patient_view():
+    if session['user']['role'] != 'patient':
+        return redirect(url_for('login'))
+
     patient_id = session['user']['id']
     cursor.execute('''
         SELECT a.*, 
-        d.name AS doctor_name 
+               d.name AS doctor_name 
         FROM appointments a 
         JOIN users d ON a.doctor_id = d.id 
-        WHERE a.patient_id = %s
+        WHERE a.patient_id = %s AND a.finalized = FALSE
     ''', (patient_id,))
     appointments = cursor.fetchall()
     return render_template_string(dashboard_patient_template, appointments=appointments)
-
-
 
 @app.route('/book', methods=['GET', 'POST'])
 def book():
@@ -1197,7 +1252,7 @@ def book():
         patient_id = session['user']['id']
         doctor_id = request.form['doctor_id']
         date = request.form['date']
-        time_raw = request.form['time']  # e.g. '11:15 AM'
+        time_raw = request.form['time']  
 
         try:
             time_converted = datetime.strptime(time_raw, "%I:%M %p").strftime("%H:%M:%S")
@@ -1235,8 +1290,6 @@ def reschedule(appointment_id):
     for r in routes:
         if role == r:
             return redirect(url_for(routes[r]))
-
-    # fallback if no role matched
     return redirect(url_for('login'))
 
 @app.route('/cancel/<int:appointment_id>', methods=['POST'])
@@ -1245,6 +1298,27 @@ def cancel_appointment(appointment_id):
     conn.commit()
     flash("Appointment cancelled successfully.")
     return redirect(url_for('dashboard_patient_view'))
+
+
+@app.route('/doctor/Check/<int:appointment_id>', methods=['POST'])
+def doctor_check(appointment_id):
+    cursor = conn.cursor()
+    cursor.execute("UPDATE appointments SET status = 'done' WHERE id = %s", (appointment_id,))
+    conn.commit()
+    cursor.close()
+    return redirect(url_for('dashboard_doctor_view'))
+
+
+
+
+@app.route('/admin/finalize/<int:appointment_id>', methods=['POST'])
+def finalize_appointment(appointment_id):
+    cursor = conn.cursor()
+    cursor.execute("UPDATE appointments SET finalized = TRUE WHERE id = %s", (appointment_id,))
+    conn.commit()
+    cursor.close()
+    return redirect(url_for('dashboard_admin_view'))
+
 
 if __name__ == '__main__':
     app.run(debug=True)

@@ -499,8 +499,8 @@ dashboard_admin_template = '''
           <td data-label="ID">{{ a.id }}</td>
           <td data-label="Patient">{{ a.patient_name }}</td>
           <td data-label="Doctor">{{ a.doctor_name }}</td>
-          <td data-label="Date">{{ a.date }}</td>
-          <td data-label="Time">{{ a.time }}</td>
+          <td data-label="Date">{{ a.appointment_date }}</td>
+          <td data-label="Time">{{ a.appointment_time }}</td>
           <td data-label="Status">
             {% if a.status == 'done' %}
               <span class="badge done">Done</span>
@@ -728,8 +728,8 @@ dashboard_doctor_template = '''
         {% for a in appointments %}
         <tr class="{% if a.status == 'done' %}done{% endif %}">
           <td data-label="Patient">{{ a.patient_name }}</td>
-          <td data-label="Date">{{ a.date }}</td>
-          <td data-label="Time">{{ a.time }}</td>
+          <td data-label="Date">{{ a.appointment_date }}</td>
+          <td data-label="Time">{{ a.appointment_time }}</td>
           <td data-label="Status">
             {% if a.status == 'done' %}
               <span class="badge done">Done</span>
@@ -949,8 +949,8 @@ dashboard_patient_template = '''
         {% for a in appointments %}
         <tr>
           <td data-label="Doctor">{{ a.doctor_name }}</td>
-          <td data-label="Date">{{ a.date }}</td>
-          <td data-label="Time">{{ a.time }}</td>
+          <td data-label="Date">{{ a.appointment_date }}</td>
+          <td data-label="Time">{{ a.appointment_time }}</td>
           <td data-label="Action">
             <form method="POST" action="/cancel/{{ a.id }}" style="margin: 0;">
               <button type="submit" class="cancel-btn">Cancel</button>

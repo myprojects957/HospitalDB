@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()  
+
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY')
 conn = mysql.connector.connect(
@@ -17,8 +18,6 @@ conn = mysql.connector.connect(
 )
 
 cursor = conn.cursor(dictionary=True)
-
-
 login_page = '''
 <!DOCTYPE html>
 <html lang="en">
@@ -765,12 +764,10 @@ dashboard_patient_template = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Patient Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <!-- Google Fonts -->
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet" />
 
   <style>
     * {
@@ -792,12 +789,18 @@ dashboard_patient_template = '''
       padding: 30px 40px;
       border-radius: 16px;
       box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);
+      animation: fadeIn 0.6s ease-in-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(20px); }
+      to { opacity: 1; transform: translateY(0); }
     }
 
     h2 {
       text-align: center;
-      font-size: 2.2em;
-      margin-bottom: 5px;
+      font-size: 2.4em;
+      margin-bottom: 10px;
     }
 
     .welcome {
@@ -816,23 +819,26 @@ dashboard_patient_template = '''
       display: inline-block;
       background-color: #3498db;
       color: white;
-      padding: 10px 18px;
-      border-radius: 8px;
+      padding: 12px 22px;
+      border-radius: 10px;
       text-decoration: none;
       font-weight: 600;
       margin: 10px 0 30px 0;
-      transition: background 0.3s;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 14px rgba(52, 152, 219, 0.3);
     }
 
     .book-btn:hover {
       background-color: #2980b9;
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(52, 152, 219, 0.4);
     }
 
     h3 {
-      font-size: 1.5em;
+      font-size: 1.6em;
       margin-bottom: 15px;
       color: #34495e;
-      border-left: 5px solid #2ecc71;
+      border-left: 6px solid #2ecc71;
       padding-left: 12px;
     }
 
@@ -858,38 +864,20 @@ dashboard_patient_template = '''
     }
 
     tbody tr:hover {
-      transform: scale(1.002);
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+      transform: scale(1.003);
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
     }
 
     tbody td {
       padding: 12px;
-      font-size: 14.5px;
-    }
-
-    .badge {
-      padding: 5px 10px;
-      border-radius: 12px;
-      font-weight: 600;
-      font-size: 12px;
-      display: inline-block;
-    }
-
-    .badge.completed {
-      background-color: #2ecc71;
-      color: white;
-    }
-
-    .badge.upcoming {
-      background-color: #f39c12;
-      color: white;
+      font-size: 15px;
     }
 
     .cancel-btn {
       background-color: #e74c3c;
       border: none;
       padding: 6px 12px;
-      font-size: 12px;
+      font-size: 13px;
       color: white;
       border-radius: 6px;
       cursor: pointer;
@@ -927,6 +915,7 @@ dashboard_patient_template = '''
         display: flex;
         justify-content: space-between;
         padding: 10px;
+        font-size: 14px;
       }
 
       tbody td::before {
@@ -953,7 +942,6 @@ dashboard_patient_template = '''
           <th>Doctor</th>
           <th>Date</th>
           <th>Time</th>
-          <th>Status</th>
           <th>Action</th>
         </tr>
       </thead>
@@ -963,26 +951,15 @@ dashboard_patient_template = '''
           <td data-label="Doctor">{{ a.doctor_name }}</td>
           <td data-label="Date">{{ a.date }}</td>
           <td data-label="Time">{{ a.time }}</td>
-          <td data-label="Status">
-            {% if a.status == 'completed' %}
-              <span class="badge completed">Completed</span>
-            {% else %}
-              <span class="badge upcoming">Upcoming</span>
-            {% endif %}
-          </td>
           <td data-label="Action">
-            {% if a.status != 'completed' %}
-              <form method="POST" action="/cancel/{{ a.id }}" style="margin: 0;">
-                <button type="submit" class="cancel-btn">Cancel</button>
-              </form>
-            {% else %}
-              —
-            {% endif %}
+            <form method="POST" action="/cancel/{{ a.id }}" style="margin: 0;">
+              <button type="submit" class="cancel-btn">Cancel</button>
+            </form>
           </td>
         </tr>
         {% else %}
         <tr>
-          <td class="no-data" colspan="5">No appointments found.</td>
+          <td class="no-data" colspan="4">No appointments found.</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -1222,7 +1199,6 @@ def book():
         date = request.form['date']
         time_raw = request.form['time']  # e.g. '11:15 AM'
 
-        # Convert '11:15 AM' to 'HH:MM:SS' (24-hour)
         try:
             time_converted = datetime.strptime(time_raw, "%I:%M %p").strftime("%H:%M:%S")
         except ValueError:
@@ -1230,10 +1206,11 @@ def book():
             return redirect(url_for('book'))
 
         cursor.execute("""
-            INSERT INTO appointments (patient_id, doctor_id, date, time)
+            INSERT INTO appointments (patient_id, doctor_id, appointment_date, appointment_time)
             VALUES (%s, %s, %s, %s)
         """, (patient_id, doctor_id, date, time_converted))
         conn.commit()
+
         flash('Appointment Booked')
         return redirect(url_for('dashboard_patient_view'))
 
@@ -1269,27 +1246,5 @@ def cancel_appointment(appointment_id):
     flash("Appointment cancelled successfully.")
     return redirect(url_for('dashboard_patient_view'))
 
-
-@app.route('/init-db')
-def init_db():
-    try:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                role VARCHAR(50) NOT NULL,
-                name VARCHAR(100) NOT NULL,
-                email VARCHAR(100) NOT NULL UNIQUE,
-                password VARCHAR(255) NOT NULL
-            )
-        """)
-        conn.commit()
-        return "✅ Users table created successfully."
-    except Exception as e:
-        return f"❌ Error: {e}"
-
-
-
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 10000))  # Render sets this
-    app.run(host='0.0.0.0', port=port)
-
+    app.run(debug=True)

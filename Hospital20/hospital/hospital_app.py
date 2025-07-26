@@ -516,9 +516,8 @@ dashboard_admin_template = '''
                 <button type="submit" class="reschedule-btn">Done</button>
               </form>
             {% elif a.status != 'done' %}
-              <form method="POST" action="/reschedule/{{ a.id }}">
-                <button type="submit" class="reschedule-btn">Reschedule</button>
-              </form>
+              <!-- Hide or disable: doctor hasn't checked yet -->
+              <span style="color: #999;">Waiting for doctor</span>
             {% else %}
               —
             {% endif %}
@@ -980,16 +979,16 @@ book_appointment_template = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
+  <meta charset="UTF-8" />
   <title>Book Appointment</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
   <!-- Google Fonts -->
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700&display=swap" rel="stylesheet" />
 
-  <!-- Flatpickr CSS (for beautiful date & time picker) -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/material_blue.css">
+  <!-- Flatpickr CSS -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/material_blue.css" />
 
   <style>
     body {
@@ -998,56 +997,58 @@ book_appointment_template = '''
       background: linear-gradient(135deg, #f5f7fa, #c3cfe2);
       display: flex;
       justify-content: center;
-      align-items: center;
-      height: 100vh;
+      align-items: flex-start;
+      min-height: 100vh;
+      padding: 20px;
+      overflow-y: auto;
     }
 
     .card {
-      background: rgba(255, 255, 255, 0.9);
-      padding: 40px;
+      background: rgba(255, 255, 255, 0.95);
+      padding: 30px 25px;
       border-radius: 18px;
       box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
       max-width: 500px;
       width: 100%;
+      margin: auto;
     }
 
     h2 {
       text-align: center;
       color: #2c3e50;
-      margin-bottom: 25px;
+      margin-bottom: 20px;
+      font-size: 24px;
     }
 
     label {
       display: block;
-      margin: 12px 0 6px;
+      margin: 8px 0 4px;
       font-weight: bold;
       color: #34495e;
     }
 
-    select, input {
+    input,
+    select {
       width: 100%;
       padding: 12px;
       font-size: 15px;
       border-radius: 10px;
       border: 1px solid #ccc;
-      margin-bottom: 18px;
+      margin-bottom: 15px;
+      box-sizing: border-box;
     }
 
-    select:focus, input:focus {
-      border-color: #2980b9;
-      outline: none;
-    }
-
-    input[type="submit"] {
+    input[type='submit'] {
       background: linear-gradient(135deg, #27ae60, #2ecc71);
       color: white;
       border: none;
       cursor: pointer;
       transition: transform 0.2s ease;
       font-weight: bold;
+      font-size: 16px;
     }
 
-    input[type="submit"]:hover {
+    input[type='submit']:hover {
       transform: scale(1.02);
       background: linear-gradient(135deg, #229954, #27ae60);
     }
@@ -1055,7 +1056,7 @@ book_appointment_template = '''
     .back-link {
       display: block;
       text-align: center;
-      margin-top: 15px;
+      margin-top: 12px;
       text-decoration: none;
       color: #2980b9;
       font-weight: 600;
@@ -1064,26 +1065,57 @@ book_appointment_template = '''
     .back-link:hover {
       color: #1c5980;
     }
+
+    #timePeriod {
+      font-weight: bold;
+      font-size: 16px;
+      color: #8e44ad;
+      text-align: center;
+      margin-bottom: 15px;
+    }
+
+    /* Flex row for Age & Gender */
+    .row {
+      display: flex;
+      gap: 15px;
+      margin-bottom: 15px;
+    }
+
+    .row .field {
+      flex: 1;
+    }
+
+    /* Responsive for small screens */
+    @media (max-width: 500px) {
+      .row {
+        flex-direction: column;
+      }
+    }
   </style>
 </head>
 <body>
-
   <div class="card">
     <h2>Book Appointment</h2>
     <form method="POST">
-    <label for="name">Full Name:</label>
-      <input type="text" id="name" name="name" placeholder="Enter your full name" required>
+      <label for="name">Full Name:</label>
+      <input type="text" id="name" name="name" placeholder="Enter your full name" required />
 
-      <label for="age">Age:</label>
-      <input type="number" id="age" name="age" placeholder="Enter your age" min="0" required>
+      <div class="row">
+        <div class="field">
+          <label for="age">Age:</label>
+          <input type="number" id="age" name="age" placeholder="Enter your age" min="0" required />
+        </div>
 
-      <label for="gender">Gender:</label>
-      <select id="gender" name="gender" required>
-        <option value="" disabled selected>-- Select gender --</option>
-        <option value="Male">Male</option>
-        <option value="Female">Female</option>
-        <option value="Other">Other</option>
-      </select>
+        <div class="field">
+          <label for="gender">Gender:</label>
+          <select id="gender" name="gender" required>
+            <option value="" disabled selected>-- Select gender --</option>
+            <option value="Male">Male</option>
+            <option value="Female">Female</option>
+            <option value="Other">Other</option>
+          </select>
+        </div>
+      </div>
 
       <label for="doctor">Select Doctor:</label>
       <select name="doctor_id" id="doctor" required>
@@ -1094,14 +1126,14 @@ book_appointment_template = '''
       </select>
 
       <label for="date">Select Date:</label>
-      <input type="text" id="date" name="date" placeholder="Choose date" required>
+      <input type="text" id="date" name="date" placeholder="Choose date" required />
 
       <label for="time">Select Time:</label>
-      <input type="text" id="time" name="time" placeholder="Choose time" required>
+      <input type="text" id="time" name="time" placeholder="Choose time" required />
 
       <div id="timePeriod">—</div>
 
-      <input type="submit" value="Book Appointment">
+      <input type="submit" value="Book Appointment" />
     </form>
 
     <a href="/dashboard_patient" class="back-link">← Back to Dashboard</a>
@@ -1119,7 +1151,7 @@ book_appointment_template = '''
   flatpickr("#time", {
     enableTime: true,
     noCalendar: true,
-    dateFormat: "h:i K", // 12-hour format with AM/PM
+    dateFormat: "h:i K", 
     time_24hr: false,
     disableMobile: true,
     onChange: function(selectedDates, dateStr, instance) {
@@ -1155,7 +1187,6 @@ book_appointment_template = '''
     if (hiddenInput) hiddenInput.value = time24;
   }
 </script>
-
 </body>
 </html>
 '''
@@ -1200,8 +1231,10 @@ def logout():
 
 @app.route('/dashboard_admin')
 def dashboard_admin_view():
-    if session['user']['role'] != 'admin':
+    if 'user' not in session or session['user'].get('role') != 'admin':
         return redirect(url_for('login'))
+
+    cursor = conn.cursor(dictionary=True)
     cursor.execute('''
         SELECT a.*, 
                p.name AS patient_name, 
@@ -1211,8 +1244,35 @@ def dashboard_admin_view():
         JOIN users d ON a.doctor_id = d.id
     ''')
     appointments = cursor.fetchall()
+    cursor.close()
+
     return render_template_string(dashboard_admin_template, appointments=appointments)
 
+@app.route('/register_admin', methods=['POST'])
+def register_admin():
+    name = request.form['name']
+    email = request.form['email']
+    password = request.form['password']
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+    admin_count = cursor.fetchone()[0]
+
+    if admin_count >= 1:
+        flash("Admin already exists. Only one admin allowed.")
+        cursor.close()
+        return redirect(url_for('register'))
+
+    cursor.execute('''
+        INSERT INTO users (role, name, email, password)
+        VALUES (%s, %s, %s, %s)
+    ''', ('admin', name, email, password))
+
+    conn.commit()
+    cursor.close()
+
+    flash("Admin registered successfully!")
+    return redirect(url_for('login'))
 
 @app.route('/dashboard_doctor')
 def dashboard_doctor_view():
@@ -1269,7 +1329,6 @@ def book():
         flash('Appointment Booked')
         return redirect(url_for('dashboard_patient_view'))
 
-    # Fetch doctors
     cursor.execute("SELECT * FROM users WHERE role='doctor'")
     doctors = cursor.fetchall()
     return render_template_string(book_appointment_template, doctors=doctors)
@@ -1292,6 +1351,7 @@ def reschedule(appointment_id):
             return redirect(url_for(routes[r]))
     return redirect(url_for('login'))
 
+
 @app.route('/cancel/<int:appointment_id>', methods=['POST'])
 def cancel_appointment(appointment_id):
     cursor.execute("DELETE FROM appointments WHERE id = %s", (appointment_id,))
@@ -1307,8 +1367,6 @@ def doctor_check(appointment_id):
     conn.commit()
     cursor.close()
     return redirect(url_for('dashboard_doctor_view'))
-
-
 
 
 @app.route('/admin/finalize/<int:appointment_id>', methods=['POST'])

@@ -42,11 +42,12 @@ scheduler = BackgroundScheduler(
         'default': SQLAlchemyJobStore(url=db_url)
     },
     executors={
-        'default': ThreadPoolExecutor(20)
+        'default': ThreadPoolExecutor(max_workers=5)  # Reduced number of workers
     },
     job_defaults={
-        'coalesce': False,
-        'max_instances': 3
+        'coalesce': True,  # Combine missed executions
+        'max_instances': 1,  # Limit concurrent instances
+        'misfire_grace_time': 3600  # Allow an hour for misfired jobs
     }
 )
 
@@ -104,18 +105,40 @@ db_config = {
 db = mysql.connector.connect(**db_config)
 
 def q(query, params=None, fetchone=False, fetchall=False, many=False, commit=False):
-    cur = db.cursor(dictionary=True)
-    if many:
-        cur.executemany(query, params or [])
-    else:
-        cur.execute(query, params or ())
-    if commit:
-        db.commit()
-    if fetchone:
-        return cur.fetchone()
-    if fetchall:
-        return cur.fetchall()
-    return cur
+    global db
+    max_retries = 3
+    retry_count = 0
+    
+    while retry_count < max_retries:
+        try:
+            # Check if connection is alive
+            if not db.is_connected():
+                print("Reconnecting to database...")
+                db = mysql.connector.connect(**db_config)
+            
+            cur = db.cursor(dictionary=True)
+            if many:
+                cur.executemany(query, params or [])
+            else:
+                cur.execute(query, params or ())
+            if commit:
+                db.commit()
+            if fetchone:
+                return cur.fetchone()
+            if fetchall:
+                return cur.fetchall()
+            return cur
+            
+        except mysql.connector.Error as err:
+            retry_count += 1
+            print(f"Database error: {err}, attempt {retry_count} of {max_retries}")
+            if retry_count == max_retries:
+                raise
+            time.sleep(1)  # Wait before retrying
+            try:
+                db = mysql.connector.connect(**db_config)
+            except:
+                continue
 
 if MAIL_AVAILABLE:
     app.config.update(
@@ -510,18 +533,28 @@ def send_reminder_sms():
 
 # ---------------------------- Application Startup ----------------------------
 def start_scheduler():
+    global scheduler
     try:
-        if not scheduler.running:
-            print(f"Attempting to start scheduler with URL: {db_url}")
-            scheduler.start()
+        if scheduler and scheduler.running:
+            print("Scheduler already running")
+            return
+            
+        print(f"Attempting to start scheduler with URL: {db_url}")
+        scheduler.start(paused=True)  # Start paused to prevent immediate job processing
+        
+        # Test database connection
+        try:
+            scheduler._jobstores['default'].get_due_jobs(now=datetime.now())
+            scheduler.resume()  # Resume only if database connection works
             print("Scheduler started successfully")
+        except Exception as db_err:
+            print(f"Scheduler database error: {db_err}")
+            scheduler.shutdown()
+            scheduler = None  # Allow recreation on next attempt
+            
     except Exception as e:
         print(f"Error starting scheduler: {str(e)}")
-        print(f"Database URL components:")
-        print(f"Host: {mysql_host}")
-        print(f"Port: {mysql_port}")
-        print(f"User: {mysql_user}")
-        print(f"Database: {mysql_database}")
+        scheduler = None  # Allow recreation on next attempt
 
 start_scheduler()
 

@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Doctor Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body{font-family:'Poppins',sans-serif;margin:0;padding:30px;background:#eef5ff}
+    .top{display:flex;justify-content:space-between;align-items:center}
+    a.btn{background:#e74c3c;color:#fff;padding:10px 16px;border-radius:8px;text-decoration:none}
+    a.btn:hover{opacity:.9}
+    table{width:100%;border-collapse:separate;border-spacing:0 10px;margin-top:20px}
+    thead th{background:#3498db;color:#fff;padding:10px;border-radius:6px;text-align:left}
+    td{padding:10px;background:#fff}
+    .act button{margin-right:6px;padding:6px 10px;border:none;border-radius:6px;color:#fff;cursor:pointer}
+    .inprog{background:#f39c12}.done{background:#27ae60}.pres{background:#8e44ad}
+    .act-btn{margin-right:6px;padding:6px 10px;border:none;border-radius:6px;color:#fff;cursor:pointer}
+  </style>
+</head>
+<body>
+  <div class="top">
+    <h2>Dr. {{ session.user.name }}</h2>
+    <div>
+      <a class="btn" href="{{ url_for('set_availability') }}">Set Availability</a>
+      <a class="btn" href="{{ url_for('logout') }}">Logout</a>
+    </div>
+  </div>
+
+  <h3>Today & Upcoming</h3>
+  <table>
+    <thead><tr><th>Patient</th><th>Date</th><th>Time</th><th>Emergency</th><th>Type</th><th>Status</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for a in appointments %}
+      <tr>
+        <td>{{ a.patient_name }}</td>
+        <td>{{ a.appointment_date }}</td>
+        <td>{{ a.appointment_time }}</td>
+        <td>{{ 'Yes' if a.emergency else 'No' }}</td>
+        <td>{{ 'Telemedicine' if a.telemedicine else 'In-Person' }}</td>
+        <td>{{ a.status }}</td>
+        <td class="act">
+          {% if a.status == 'booked' %}
+            <form style="display:inline" method="POST" action="{{ url_for('mark_in_progress', appointment_id=a.id) }}"><button class="inprog">In-Progress</button></form>
+          {% endif %}
+          {% if a.status in ['booked','in_progress'] %}
+            <form style="display:inline" method="POST" action="{{ url_for('mark_done', appointment_id=a.id) }}"><button class="done">Done</button></form>
+            {% if a.telemedicine %}
+              <form style="display:inline" method="POST" action="{{ url_for('start_video_call', appointment_id=a.id) }}">
+                <button style="background:#27ae60" class="act-btn">📹 Video Call</button>
+              </form>
+            {% endif %}
+          {% endif %}
+          <a href="{{ url_for('prescription_form', appointment_id=a.id) }}"><button class="pres">Prescription</button></a>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6">No appointments.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

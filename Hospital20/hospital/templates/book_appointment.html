@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Book Appointment</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+<style>
+body{font-family:Nunito,system-ui,Arial;margin:0;padding:30px;background:linear-gradient(135deg,#f5f7fa,#c3cfe2)}
+.card{background:#fff;border-radius:14px;box-shadow:0 8px 24px rgba(0,0,0,.08);padding:24px;max-width:520px;margin:auto}
+label{font-weight:700;display:block;margin:10px 0 6px}
+select,input{width:100%;padding:10px;border:1px solid #ccc;border-radius:10px}
+.row{display:flex;gap:12px}.row>div{flex:1}
+.btn{width:100%;padding:12px;border:none;border-radius:10px;background:#27ae60;color:#fff;font-weight:800;margin-top:10px;cursor:pointer}
+.avail-table{width:100%;border-collapse:collapse;margin:12px 0}
+.avail-table th, .avail-table td{border:1px solid #ccc;padding:6px;text-align:center}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>Book Appointment</h2>
+
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}<ul style="color:#e74c3c">{% for m in messages %}<li>{{m}}</li>{% endfor %}</ul>{% endif %}
+  {% endwith %}
+
+  <!-- Department & Doctor Selection -->
+  <form method="POST">
+    <label>Department</label>
+    <select id="dept" name="department_id" required>
+      <option value="">-- Select Department --</option>
+      {% for d in departments %}
+      <option value="{{ d.id }}">{{ d.name }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Doctor</label>
+    <select id="doctor" name="doctor_id" required>
+      <option value="">-- Select Doctor --</option>
+    </select>
+
+    <div class="row">
+      <div>
+        <label>Date</label>
+        <input id="date" name="date" placeholder="YYYY-MM-DD" required>
+      </div>
+      <div>
+        <label>Time Slot</label>
+        <select id="time" name="time" required><option value="">-- Pick Time --</option></select>
+      </div>
+    </div>
+
+    <label>Emergency?</label>
+    <select name="emergency" required><option value="0">No</option><option value="1">Yes</option></select>
+    <label>Telemedicine?</label>
+    <select name="telemedicine" required><option value="0">No</option><option value="1">Yes</option></select>
+
+    <button class="btn" type="submit">Book</button>
+  </form>
+
+  <a href="{{ url_for('dashboard_patient_view') }}">← Back to Dashboard</a>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+<script>
+flatpickr("#date", { dateFormat: "Y-m-d", minDate: "today" });
+
+const dept = document.getElementById('dept');
+const docSel = document.getElementById('doctor');
+const dateIn = document.getElementById('date');
+const timeSel = document.getElementById('time');
+
+let doctorAvailability = {}; // store weekly availability for selected doctor
+
+// 1️⃣ Load doctors when department changes
+dept.addEventListener('change', async () => {
+    console.log('Department changed to:', dept.value);
+    
+    docSel.innerHTML = '<option value="">-- Select Doctor --</option>';
+    timeSel.innerHTML = '<option value="">-- Pick Time --</option>';
+    doctorAvailability = {};
+
+    if (!dept.value) {
+        console.log('No department selected');
+        return;
+    }
+
+    try {
+        console.log('Fetching doctors for department:', dept.value);
+        const res = await fetch(`/api/doctors?department_id=${dept.value}`);
+        
+        if (!res.ok) {
+            throw new Error(`HTTP error! status: ${res.status}`);
+        }
+        
+        const doctors = await res.json();
+        console.log('Received doctors:', doctors);
+
+        if (doctors.error) {
+            console.error('API error:', doctors.error);
+            return;
+        }
+
+        if (doctors.length === 0) {
+            docSel.innerHTML = '<option value="">No doctors available in this department</option>';
+            return;
+        }
+
+        doctors.forEach(d => {
+            const opt = document.createElement('option');
+            opt.value = d.id;
+            opt.textContent = `Dr. ${d.name} (₹${d.fee || 0})`;
+            docSel.appendChild(opt);
+        });
+    } catch (error) {
+        console.error('Error loading doctors:', error);
+        docSel.innerHTML = '<option value="">Error loading doctors</option>';
+    }
+});
+
+// 2️⃣ Load doctor availability when doctor is selected
+docSel.addEventListener('change', async () => {
+    console.log('Doctor selected:', docSel.value);
+    timeSel.innerHTML = '<option value="">-- Pick Time --</option>';
+    doctorAvailability = {};
+
+    if (!docSel.value) return;
+
+    try {
+        const res = await fetch(`/api/availability?doctor_id=${docSel.value}`);
+        if (!res.ok) {
+            throw new Error(`HTTP error! status: ${res.status}`);
+        }
+        const data = await res.json();
+        console.log('Received availability data:', data);
+        doctorAvailability = data;
+
+        // Optional: update availability table if exists
+        ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"].forEach(day => {
+            const startCell = document.getElementById(`${day}_start`);
+            const endCell = document.getElementById(`${day}_end`);
+            if (startCell && endCell) {
+                startCell.textContent = data[day]?.start || '--:--';
+                endCell.textContent = data[day]?.end || '--:--';
+            }
+        });
+
+        if (dateIn.value) {
+            loadSlots();
+        }
+    } catch (error) {
+        console.error('Error fetching doctor availability:', error);
+    }
+});
+
+// 3️⃣ Load available slots based on doctor availability & booked slots
+async function loadSlots() {
+    console.log('Loading slots...');
+    timeSel.innerHTML = '<option value="">-- Pick Time --</option>';
+    const doctorId = docSel.value;
+    const date = dateIn.value;
+    if (!doctorId || !date) {
+        console.log('Missing doctor or date');
+        return;
+    }
+
+    // Convert date to proper format
+    const dateObj = new Date(date);
+    const dayAbbr = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(dateObj);
+    console.log('Day abbreviation:', dayAbbr);
+
+    const avail = doctorAvailability[dayAbbr];
+    console.log('Availability for day:', avail);
+    
+    if (!avail || !avail.start || !avail.end) {
+        console.log('No availability for this day');
+        timeSel.innerHTML = '<option value="">Doctor not available on this day</option>';
+        return;
+    }
+
+    // Generate 30-min slots
+    let slots = [];
+    try {
+        const [startHour, startMin] = avail.start.split(':').map(Number);
+        const [endHour, endMin] = avail.end.split(':').map(Number);
+        
+        let start = new Date(date);
+        start.setHours(startHour, startMin, 0, 0);
+        
+        let end = new Date(date);
+        end.setHours(endHour, endMin, 0, 0);
+        
+        console.log('Generating slots from', start.toLocaleTimeString(), 'to', end.toLocaleTimeString());
+
+        while (start < end) {
+            const timeStr = start.toTimeString().slice(0,5);
+            slots.push(timeStr);
+            start.setMinutes(start.getMinutes() + 30);
+        }
+
+        // Fetch already booked slots
+        const res = await fetch(`/api/booked_slots?doctor_id=${doctorId}&date=${date}`);
+        if (!res.ok) {
+            throw new Error(`HTTP error! status: ${res.status}`);
+        }
+        
+        const data = await res.json();
+        console.log('Booked slots response:', data);
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        // Filter out booked slots
+        slots = slots.filter(s => !data.includes(s));
+        console.log('Available slots:', slots);
+
+        if (slots.length === 0) {
+            timeSel.innerHTML = '<option value="">No available slots for this day</option>';
+        } else {
+            slots.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s;
+                opt.textContent = s;
+                timeSel.appendChild(opt);
+            });
+        }
+    } catch (error) {
+        console.error('Error generating slots:', error);
+        timeSel.innerHTML = '<option value="">Error loading time slots</option>';
+    }
+}
+
+// 4️⃣ Refresh slots when date changes
+dateIn.addEventListener('change', loadSlots);
+</script>
+</body>
+</html>

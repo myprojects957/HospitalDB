@@ -229,17 +229,17 @@ def init_db():
         except Exception as e:
             print(f"Seed insert skipped: {e}")
 
-    user = q("SELECT id FROM users WHERE email=%s LIMIT 1", ("admin@demo.com",), fetchone=True)
+    user = q("SELECT id FROM users WHERE email=%s LIMIT 1", ("Pankaja@chavan.com",), fetchone=True)
     if not user:
-        pwd = generate_password_hash("admin123")
+        pwd = generate_password_hash("Pankaja1965")
         q(
             "INSERT INTO users (role, name, email, password_hash) VALUES (%s, %s, %s, %s)",
-            ("admin", "Super Admin", "admin@demo.com", pwd),
+            ("Pankaja", "Super Pankaja", "Pankaja@chavan.com", pwd),
             commit=True
         )
-        flash("Default admin created: admin@demo.com / admin123")
+        flash("Default Pankaja created: Pankaja@chavan.com / Pankaja1965")
     else:
-        flash("Admin already exists. Login with admin@demo.com / your password")
+        flash("Pankaja already exists. Login with Pankaja@chavan.com / your password = Pankaja1965")
 
     return redirect(url_for("login"))
 

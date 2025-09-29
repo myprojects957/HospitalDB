@@ -1208,7 +1208,8 @@ def pay_start(appointment_id):
             flash("No fee is set for this appointment.")
             return redirect(url_for("dashboard_patient_view"))
 
-            amount = int(ap["fee"] * 100)        return render_template('payment.html',
+        amount = int(ap["fee"] * 100)
+        return render_template('payment.html',
                                    doctor_name=ap["doctor_name"], 
                                    amount=amount,
                                    appointment_id=appointment_id)

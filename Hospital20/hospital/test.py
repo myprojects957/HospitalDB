@@ -1,7 +1,6 @@
 import os
 from datetime import datetime, timedelta, time as dt_time
 import random, string, time, hashlib
-from config import *
 from functools import wraps
 from urllib.parse import quote_plus
 

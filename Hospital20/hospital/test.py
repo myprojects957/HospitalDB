@@ -42,12 +42,12 @@ scheduler = BackgroundScheduler(
         'default': SQLAlchemyJobStore(url=db_url)
     },
     executors={
-        'default': ThreadPoolExecutor(max_workers=5)  # Reduced number of workers
+        'default': ThreadPoolExecutor(max_workers=5)  
     },
     job_defaults={
-        'coalesce': True,  # Combine missed executions
-        'max_instances': 1,  # Limit concurrent instances
-        'misfire_grace_time': 3600  # Allow an hour for misfired jobs
+        'coalesce': True,  
+        'max_instances': 1, 
+        'misfire_grace_time': 3600  
     }
 )
 
@@ -68,8 +68,6 @@ try:
 except Exception:
     REPORTLAB_AVAILABLE = False
 
-SMS_API_KEY = os.getenv('SMS_API_KEY', '')
-SMS_API_URL = os.getenv('SMS_API_URL', '')
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
@@ -111,7 +109,6 @@ def q(query, params=None, fetchone=False, fetchall=False, many=False, commit=Fal
     
     while retry_count < max_retries:
         try:
-            # Check if connection is alive
             if not db.is_connected():
                 print("Reconnecting to database...")
                 db = mysql.connector.connect(**db_config)
@@ -134,7 +131,7 @@ def q(query, params=None, fetchone=False, fetchall=False, many=False, commit=Fal
             print(f"Database error: {err}, attempt {retry_count} of {max_retries}")
             if retry_count == max_retries:
                 raise
-            time.sleep(1)  # Wait before retrying
+            time.sleep(1)  
             try:
                 db = mysql.connector.connect(**db_config)
             except:
@@ -190,10 +187,6 @@ def role_required(*roles):
 def log_action(role, user_id, action):
     q("INSERT INTO audit_logs (role, user_id, action) VALUES (%s,%s,%s)", (role, user_id, action))
 
-
-
-
-
 def weekday_name(date_str):
     dt = datetime.strptime(date_str, "%Y-%m-%d").date()
     return ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][dt.weekday()]
@@ -223,171 +216,46 @@ SEED_SQL = [
 
 @app.route("/init_db")
 def init_db():
+    # Run your seed SQL if any
     for query, data in SEED_SQL:
         try:
             q(query, data, many=True, commit=True)
         except Exception as e:
             print(f"Seed insert skipped: {e}")
 
-    user = q("SELECT id FROM users WHERE email=%s LIMIT 1", ("Pankaja@chavan.com",), fetchone=True)
+    # Delete old admin users (optional, if you want a clean reset)
+    try:
+        q("DELETE FROM users WHERE role='admin'", commit=True)
+        print("Old admin users deleted successfully.")
+    except Exception as e:
+        print(f"Error deleting old admins: {e}")
+
+    # Check if admin already exists
+    user = q(
+        "SELECT id FROM users WHERE email=%s LIMIT 1",
+        ("PankajaChavan@1965.com",),
+        fetchone=True
+    )
+
     if not user:
-        pwd = generate_password_hash("Pankaja1965")
-        q(
-            "INSERT INTO users (role, name, email, password_hash) VALUES (%s, %s, %s, %s)",
-            ("Pankaja", "Super Pankaja", "Pankaja@chavan.com", pwd),
-            commit=True
-        )
-        flash("Default Pankaja created: Pankaja@chavan.com / Pankaja1965")
+        pwd_hash = generate_password_hash("Pankaja1965")
+        try:
+            q(
+                "INSERT INTO users (role, name, email, password_hash) VALUES (%s, %s, %s, %s)",
+                ("admin", "Pankaja", "PankajaChavan@1965.com", pwd_hash),
+                commit=True
+            )
+            flash("Default admin created: PankajaChavan@1965.com / your password")
+        except Exception as e:
+            print(f"Error creating admin: {e}")
+            flash("Failed to create admin. Check logs.")
     else:
-        flash("Pankaja already exists. Login with Pankaja@chavan.com / your password = Pankaja1965")
+        flash("Admin already exists. Login with PankajaChavan@1965.com / your password")
 
     return redirect(url_for("login"))
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-payment_page = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Payment Demo</title>
-    <style>
-        body { 
-            font-family: system-ui, -apple-system, sans-serif; 
-            margin: 0; 
-            padding: 20px;
-            background: #f7fafc; 
-        }
-        .payment-container {
-            max-width: 500px;
-            margin: 40px auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            padding: 25px;
-        }
-        .header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        .amount {
-            font-size: 32px;
-            font-weight: bold;
-            color: #2d3748;
-            text-align: center;
-            margin: 20px 0;
-        }
-        .payment-options {
-            display: grid;
-            gap: 15px;
-            margin: 25px 0;
-        }
-        .payment-btn {
-            width: 100%;
-            padding: 15px;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            transition: transform 0.1s;
-        }
-        .payment-btn:active {
-            transform: scale(0.98);
-        }
-        .upi-btn { background: #6c63ff; color: white; }
-        .card-btn { background: #38a169; color: white; }
-        .cash-btn { background: #718096; color: white; }
-        .back-btn {
-            display: inline-block;
-            padding: 10px 20px;
-            color: #4a5568;
-            text-decoration: none;
-            margin-top: 20px;
-        }
-        .detail-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid #edf2f7;
-        }
-        .detail-label { color: #4a5568; }
-        .detail-value { font-weight: 600; }
-    </style>
-</head>
-<body>
-    <div class="payment-container">
-        <div class="header">
-            <h2 style="margin:0">Payment Details</h2>
-            <p style="color:#4a5568;margin:5px 0">Choose your payment method</p>
-        </div>
-
-        <div class="detail-row">
-            <span class="detail-label">Doctor</span>
-            <span class="detail-value">Dr. {{ doctor_name }}</span>
-        </div>
-        <div class="detail-row">
-            <span class="detail-label">Appointment ID</span>
-            <span class="detail-value">#{{ appointment_id }}</span>
-        </div>
-        <div class="detail-row">
-            <span class="detail-label">Fee</span>
-            <span class="detail-value">₹{{ "%.2f"|format(amount/100) }}</span>
-        </div>
-
-        <div class="payment-options">
-            
-            <form action="{{ url_for('payment_success', appointment_id=appointment_id) }}" method="POST">
-                <input type="hidden" name="payment_method" value="upi">
-                <button type="submit" class="payment-btn upi-btn">
-                    <span>Pay with UPI</span>
-                </button>
-            </form>
-
-            <form action="{{ url_for('payment_success', appointment_id=appointment_id) }}" method="POST">
-                <input type="hidden" name="payment_method" value="card">
-                <button type="submit" class="payment-btn card-btn">
-                    <span>Pay with Card</span>
-                </button>
-            </form>
-
-            <form action="{{ url_for('payment_success', appointment_id=appointment_id) }}" method="POST">
-                <input type="hidden" name="payment_method" value="cash">
-                <button type="submit" class="payment-btn cash-btn">
-                    <span>Pay at Hospital</span>
-                </button>
-            </form>
-        </div>
-
-        <a href="{{ url_for('dashboard_patient_view') }}" class="back-btn">← Back to Dashboard</a>
-    </div>
-</body>
-</html>
-"""
-
 def schedule_appointment_reminders(appointment_id):
     try:
-        # Get appointment details with patient info
         appt = q("""
             SELECT a.*, d.name as doctor_name, p.id as patient_id, 
                    p.reminders_enabled,
@@ -406,8 +274,7 @@ def schedule_appointment_reminders(appointment_id):
             
         print(f"Processing reminders for appointment {appointment_id}")
         print(f"Patient reminders enabled: {appt.get('reminders_enabled')}")
-            
-        # Calculate reminder times
+         
         appt_datetime = datetime.strptime(
             appt['formatted_date'] + ' ' + appt['formatted_time'], 
             '%Y-%m-%d %H:%M'
@@ -415,7 +282,6 @@ def schedule_appointment_reminders(appointment_id):
         reminder_2hr = appt_datetime - timedelta(hours=2)
         reminder_30min = appt_datetime - timedelta(minutes=30)
         
-        # Schedule reminders if they're in the future
         now = datetime.now()
         
         def send_appointment_reminder(appointment_data, reminder_type):
@@ -426,10 +292,7 @@ def schedule_appointment_reminders(appointment_id):
             print(f"Patient: {appointment_data['patient_name']}")
             print(f"Doctor: Dr. {appointment_data['doctor_name']}")
             print(f"Appointment time: {appointment_data['formatted_time']}")
-            
-            # Send SMS if phone number is available
-                
-            # Prepare browser notification data
+            print(f"Patient email: {appointment_data['patient_email']}")
             notification_data = {
                 'title': 'Appointment Reminder',
                 'message': (f"Your appointment with Dr. {appointment_data['doctor_name']} "
@@ -484,8 +347,7 @@ def set_reminder_preference():
     try:
         data = request.get_json()
         enabled = data.get('enabled', False)
-        
-        # Update user's reminder preference
+
         q("UPDATE users SET reminders_enabled = %s WHERE id = %s",
           (enabled, session['user']['id']),
           commit=True)
@@ -502,26 +364,25 @@ def send_reminder_sms():
         data = request.get_json()
         appointment_id = data.get('appointment_id')
         reminder_type = data.get('reminder_type')
-        
-        # Get appointment details with patient phone
+
         appt = q("""
             SELECT a.*, d.name as doctor_name, p.phone as patient_phone
             FROM appointments a
             JOIN users d ON d.id = a.doctor_id
             JOIN users p ON p.id = a.patient_id
             WHERE a.id = %s AND a.patient_id = %s
-        """, (appointment_id, session['user']['id']), fetchone=True)
+        """, 
+        (appointment_id, session['user']['id']), fetchone=True)
         
         if not appt or not appt['patient_phone']:
             return jsonify({'success': False, 'error': 'Invalid appointment or no phone number'}), 400
-            
-        # Prepare reminder message
+        if reminder_type not in ['2hour', '30min']:
+            return jsonify({'success': False, 'error': 'Invalid reminder type'}), 400
         if reminder_type == '2hour':
             message = f"Reminder: Your appointment with Dr. {appt['doctor_name']} is in 2 hours at {appt['appointment_time']}"
         else:
             message = f"Reminder: Your appointment with Dr. {appt['doctor_name']} is in 30 minutes at {appt['appointment_time']}"
-            
-        # Send SMS
+        print(f"Sending SMS to {appt['patient_phone']}: {message}")
         if send_sms(appt['patient_phone'], message):
             return jsonify({'success': True})
         else:
@@ -531,30 +392,28 @@ def send_reminder_sms():
         print(f"Error sending reminder SMS: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
-# ---------------------------- Application Startup ----------------------------
 def start_scheduler():
     global scheduler
+    
     try:
         if scheduler and scheduler.running:
             print("Scheduler already running")
             return
             
         print(f"Attempting to start scheduler with URL: {db_url}")
-        scheduler.start(paused=True)  # Start paused to prevent immediate job processing
-        
-        # Test database connection
+        scheduler.start(paused=True)  
         try:
             scheduler._jobstores['default'].get_due_jobs(now=datetime.now())
-            scheduler.resume()  # Resume only if database connection works
+            scheduler.resume()  
             print("Scheduler started successfully")
         except Exception as db_err:
             print(f"Scheduler database error: {db_err}")
             scheduler.shutdown()
-            scheduler = None  # Allow recreation on next attempt
+            scheduler = None  
             
     except Exception as e:
         print(f"Error starting scheduler: {str(e)}")
-        scheduler = None  # Allow recreation on next attempt
+        scheduler = None 
 
 start_scheduler()
 
@@ -573,7 +432,6 @@ def login():
             flash("Invalid credentials")
             return render_template('login.html')
 
-        # Login successful
         session["user"] = user
         log_action(user["role"], user["id"], "login")
 
@@ -597,7 +455,7 @@ def logout():
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    # Fetch departments for doctor role
+    
     departments = q("SELECT * FROM departments ORDER BY name", fetchall=True) or []
 
     if request.method == "POST":
@@ -608,15 +466,12 @@ def register():
         department_id = request.form.get("department_id") if role == "doctor" else None
         fee = float(request.form.get("fee", 0)) if role == "doctor" else 0
 
-        # Check if email already exists
         if q("SELECT id FROM users WHERE email=%s", (email,), fetchone=True):
             flash("Email already registered")
             return render_template('register.html', departments=departments)
 
-        # Hash password
         pwd_hash = generate_password_hash(password)
 
-        # Insert user
         q(
             "INSERT INTO users (role, name, email, password_hash, department_id, fee) "
             "VALUES (%s,%s,%s,%s,%s,%s)",
@@ -627,7 +482,6 @@ def register():
         flash("Account created successfully!")
         return redirect(url_for("login"))
 
-    # Render the template with departments
     return render_template('register.html', departments=departments)
 
 @app.route("/dashboard_patient")
@@ -657,7 +511,7 @@ def book():
         pid = session["user"]["id"]
 
         try:
-            # --- 1. Collect and validate form data ---
+            
             doc_id = request.form.get("doctor_id")
             date = request.form.get("date")
             time = request.form.get("time")
@@ -676,7 +530,6 @@ def book():
                 'telemedicine': telemedicine
             })
 
-            # --- 2. Get doctor department ---
             doctor = q(
                 "SELECT department_id FROM users WHERE id=%s AND role='doctor'",
                 (doc_id,), fetchone=True
@@ -686,8 +539,7 @@ def book():
 
             dept_id = doctor['department_id']
             print("Found doctor's department_id:", dept_id)
-
-            # --- 3. Prevent double booking ---
+            appt_date = datetime.strptime(date, "%Y-%m-%d").date()
             dup = q("""SELECT id FROM appointments 
                        WHERE doctor_id=%s AND appointment_date=%s 
                        AND appointment_time=%s AND status!='cancelled'""",
@@ -695,7 +547,6 @@ def book():
             if dup:
                 raise ValueError("Slot already booked, please pick another")
 
-            # --- 4. Insert appointment ---
             q("""INSERT INTO appointments 
                     (patient_id, doctor_id, department_id, appointment_date, appointment_time, emergency, telemedicine, status) 
                  VALUES (%s,%s,%s,%s,%s,%s,%s,'booked')""",
@@ -704,7 +555,6 @@ def book():
 
             appointment_id = q("SELECT LAST_INSERT_ID()", fetchone=True)['LAST_INSERT_ID()']
 
-            # --- 5. Schedule reminders ---
             try:
                 schedule_appointment_reminders(appointment_id)
                 print(f"Reminders scheduled for appointment {appointment_id}")
@@ -738,7 +588,7 @@ def cancel_appointment(appointment_id):
 @app.route("/start_video_call/<int:appointment_id>", methods=["POST"])
 @login_required
 def start_video_call(appointment_id):
-    # Get appointment details with doctor information
+    
     query = """
         SELECT a.*, d.name as doctor_name,
                DATE_FORMAT(a.appointment_date, '%Y-%m-%d') as formatted_date,
@@ -755,7 +605,6 @@ def start_video_call(appointment_id):
         flash("Invalid appointment or not a telemedicine appointment")
         return redirect(url_for("dashboard_patient_view" if session['user']['role'] == 'patient' else "dashboard_doctor_view"))
 
-    # Generate a unique room ID based on appointment details
     room_id = f"hospital-{appointment_id}-{hashlib.sha256(str(appt['formatted_date'] + appt['formatted_time']).encode()).hexdigest()[:10]}"
 
     return render_template('video_call.html',
@@ -770,7 +619,7 @@ def start_video_call(appointment_id):
 @login_required
 @role_required("patient")
 def start_call(appointment_id):
-    # Get appointment and doctor details
+    
     appt = q("""
         SELECT a.*, d.name as doctor_name, d.phone as doctor_phone
         FROM appointments a 
@@ -824,9 +673,9 @@ def set_availability():
                 et = request.form.get(f"{day}_end")
                 print(f"Day {day}: start={st}, end={et}")
                 
-                if st and et:  # Only add if both start and end times are provided
+                if st and et: 
                     try:
-                        # Convert to HH:MM:SS format
+                        
                         st = datetime.strptime(st, "%H:%M").strftime("%H:%M:00")
                         et = datetime.strptime(et, "%H:%M").strftime("%H:%M:00")
                         items.append((did, day, st, et))
@@ -1005,14 +854,14 @@ def prescription_form(appointment_id):
         pdf_path = None
         try:
             if REPORTLAB_AVAILABLE:
-                # Create prescriptions directory if it doesn't exist
+                from gen_pdf import generate_prescription
+                print("Generating prescription PDF using reportlab...")
                 prescriptions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prescriptions')
                 if not os.path.exists(prescriptions_dir):
                     os.makedirs(prescriptions_dir)
                 
                 pdf_path = os.path.join(prescriptions_dir, f"prescription_{pres_id}.pdf")
-                
-                # Generate prescription using the new module
+                print(f"PDF will be saved to: {pdf_path}")
                 success = generate_prescription(
                     pres_id=pres_id,
                     patient_name=ap['patient_name'],
@@ -1041,7 +890,6 @@ def prescription_form(appointment_id):
 @login_required
 def download_prescription(prescription_id):
     try:
-        # Get prescription record
         pres = q("SELECT p.*, a.patient_id, a.doctor_id FROM prescriptions p JOIN appointments a ON a.id=p.appointment_id WHERE p.id=%s", 
                  (prescription_id,), fetchone=True)
         
@@ -1049,7 +897,6 @@ def download_prescription(prescription_id):
             flash("Prescription not found.")
             return redirect(request.referrer or url_for("home"))
         
-        # Security check - only allow patient or their doctor to download
         if not (session["user"]["id"] == pres["patient_id"] or 
                 session["user"]["id"] == pres["doctor_id"] or 
                 session["user"]["role"] == "admin"):
@@ -1060,7 +907,6 @@ def download_prescription(prescription_id):
             flash("PDF path not found in database.")
             return redirect(request.referrer or url_for("home"))
         
-        # Get absolute path
         prescriptions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prescriptions')
         pdf_path = os.path.join(prescriptions_dir, os.path.basename(pres["pdf_path"]))
         
@@ -1100,8 +946,6 @@ def dashboard_admin_view():
     audits = q("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 20").fetchall()
     return render_template('dashboard_admin.html', kpi=kpi, by_dept=by_dept, audits=audits)
 
-# ---------------------------- Application Startup ----------------------------
-# Note: Scheduler is started right after initialization
 @app.route("/api/doctors")
 def api_doctors():
     try:
@@ -1123,7 +967,6 @@ def api_doctors():
         
         doctors = q(query, (department_id,), fetchall=True) or []
         
-        # Convert decimal to float for JSON serialization
         for doctor in doctors:
             if doctor['fee'] is not None:
                 doctor['fee'] = float(doctor['fee'])
@@ -1220,7 +1063,7 @@ def api_slots():
 @role_required("patient")
 def pay_start(appointment_id):
     try:
-        # Get appointment details
+        
         ap = q("""SELECT a.*, d.name AS doctor_name, d.fee
                   FROM appointments a JOIN users d ON d.id=a.doctor_id
                   WHERE a.id=%s AND a.patient_id=%s""", 
@@ -1230,12 +1073,10 @@ def pay_start(appointment_id):
             flash("Appointment not found.")
             return redirect(url_for("dashboard_patient_view"))
 
-        # Check if already paid
         if ap.get("paid"):
             flash("This appointment has already been paid for.")
             return redirect(url_for("dashboard_patient_view"))
 
-        # Validate fee
         if not ap["fee"]:
             flash("No fee is set for this appointment.")
             return redirect(url_for("dashboard_patient_view"))
@@ -1256,10 +1097,9 @@ def pay_start(appointment_id):
 @role_required("patient")
 def payment_success(appointment_id):
     try:
-        # Get payment method from form
-        payment_method = request.form.get('payment_method', 'unknown')
         
-        # Update appointment as paid
+        payment_method = request.form.get('payment_method', 'unknown')
+    
         q("""UPDATE appointments 
             SET paid = CASE 
                     WHEN %s = 'cash' THEN 0 
@@ -1270,7 +1110,6 @@ def payment_success(appointment_id):
             WHERE id=%s AND patient_id=%s""", 
           (payment_method, payment_method, appointment_id, session["user"]["id"]))
         
-        # Show appropriate message based on payment method
         if payment_method == 'cash':
             flash("Payment pending. Please pay at the hospital.")
         else:
@@ -1294,7 +1133,7 @@ def finalize_appointment(appointment_id):
 
 @app.route("/register_doctor", methods=["GET", "POST"])
 def register_doctor():
-    # Fetch all departments from DB
+    
     departments = q("SELECT * FROM departments ORDER BY name", fetchall=True) or []
 
     if request.method == "POST":
@@ -1305,15 +1144,12 @@ def register_doctor():
         department_id = request.form["department_id"]
         fee = request.form.get("fee", 0)
 
-        # Check if email already exists
         if q("SELECT id FROM users WHERE email=%s", (email,), fetchone=True):
             flash("Email already registered.")
             return render_template('register.html', departments=departments)
 
-        # Hash password
         pwd_hash = generate_password_hash(password)
 
-        # Insert doctor into users table
         q(
             "INSERT INTO users (role, name, email, password_hash, phone, department_id, fee) "
             "VALUES (%s,%s,%s,%s,%s,%s,%s)",
@@ -1324,12 +1160,11 @@ def register_doctor():
         flash("Doctor registered successfully!")
         return redirect(url_for("login"))
 
-    # Render form with departments
     return render_template_string(register_page, departments=departments)
 
 @app.route("/get_doctors/<int:dept_id>")
 def get_doctors(dept_id):
-    # Fetch only doctors who are registered in this department
+    
     doctors = q(
         "SELECT id, name FROM users WHERE role='doctor' AND department_id=%s ORDER BY name",
         (dept_id,),
@@ -1338,5 +1173,41 @@ def get_doctors(dept_id):
 
     return jsonify(doctors)
 
+
+from flask import send_file, flash, redirect, url_for
+from gen_pdf import generate_prescription
+import os
+
+@app.route('/download_prescription/<int:pres_id>', methods=['GET'])
+def download_prescription_route(pres_id):
+    """
+    Generate and download a prescription PDF using data from the database.
+    """
+
+    try:
+        prescription = Prescription.query.get(pres_id)
+        if not prescription:
+            flash("Prescription not found!", "danger")
+            return redirect(url_for('dashboard'))
+        pdf_path = os.path.join(prescriptions_dir, f"prescription_{pres_id}.pdf")
+
+        success = generate_prescription(
+            pres_id=prescription.id,
+            patient_name=prescription.patient_name,
+            doctor_name=prescription.doctor_name,
+            diagnosis=prescription.diagnosis,
+            medicines=prescription.medicines,
+            output_path=pdf_path
+        )
+
+        if not success or not os.path.exists(pdf_path):
+            flash("Failed to generate prescription PDF!", "danger")
+            return redirect(url_for('dashboard'))
+        return send_file(pdf_path, as_attachment=True)
+
+    except Exception as e:
+        flash(f"Error while generating PDF: {e}", "danger")
+        return redirect(url_for('dashboard'))
+    
 if __name__ == "__main__":
     app.run(debug=True)

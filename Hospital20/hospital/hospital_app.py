@@ -1,1382 +1,1213 @@
-from flask import Flask, request, session, redirect, url_for, flash, render_template_string
-import mysql.connector
-from datetime import datetime
 import os
+from datetime import datetime, timedelta, time as dt_time
+import random, string, time, hashlib
+from functools import wraps
+from urllib.parse import quote_plus
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.executors.pool import ThreadPoolExecutor
+
+from flask import (
+    Flask, request, session, redirect, url_for, flash,
+    render_template, render_template_string, jsonify, send_file
+)
 from dotenv import load_dotenv
+import mysql.connector
+from werkzeug.security import generate_password_hash, check_password_hash
 
-load_dotenv()  
+import pymysql
 
-app = Flask(__name__)
-app.secret_key = os.getenv('SECRET_KEY')
-conn = mysql.connector.connect(
-    host=os.getenv("MYSQL_HOST"),
-    user=os.getenv("MYSQL_USER"),
-    password=os.getenv("MYSQL_PASSWORD"),
-    database=os.getenv("MYSQL_DATABASE"),
-    port=int(os.getenv("MYSQL_PORT", 3306)),
-    ssl_disabled=False  
+mysql_user = os.getenv("MYSQL_USER", "avnadmin")
+mysql_password = os.getenv("MYSQL_PASSWORD", "AVNS_olPiVJTGPWoGFJSMGPc")
+mysql_host = os.getenv("MYSQL_HOST", "mysql-18ab8524-hospitalapp.k.aivencloud.com")
+mysql_port = os.getenv("MYSQL_PORT", "22582")
+mysql_database = os.getenv("MYSQL_DATABASE", "defaultdb")
+
+db_config = {
+    'drivername': 'mysql+pymysql',
+    'username': mysql_user,
+    'password': mysql_password,
+    'host': mysql_host,
+    'port': int(mysql_port),
+    'database': mysql_database,
+    'query': {'ssl_disabled': 'true'}
+}
+
+from sqlalchemy.engine.url import URL
+db_url = URL.create(**db_config)
+
+scheduler = BackgroundScheduler(
+    jobstores={
+        'default': SQLAlchemyJobStore(url=db_url)
+    },
+    executors={
+        'default': ThreadPoolExecutor(max_workers=5)  
+    },
+    job_defaults={
+        'coalesce': True,  
+        'max_instances': 1, 
+        'misfire_grace_time': 3600  
+    }
 )
 
-cursor = conn.cursor(dictionary=True)
+try:
+    from flask_mail import Mail, Message
+    MAIL_AVAILABLE = True
+except Exception:
+    MAIL_AVAILABLE = False
+
+try:
+    import requests
+except ImportError:
+    pass
+
+try:
+    from gen_pdf import generate_prescription
+    REPORTLAB_AVAILABLE = True
+except Exception:
+    REPORTLAB_AVAILABLE = False
 
 
-login_page = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Appointment Booking Portal</title>
-  <style>
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.executors.pool import ThreadPoolExecutor
+
+load_dotenv()
+
+app = Flask(__name__)
+
+scheduler = BackgroundScheduler(
+    jobstores={
+        'default': SQLAlchemyJobStore(url=f'mysql+mysqlconnector://{os.getenv("MYSQL_USER")}:{os.getenv("MYSQL_PASSWORD")}@{os.getenv("MYSQL_HOST")}:{os.getenv("MYSQL_PORT")}/{os.getenv("MYSQL_DATABASE")}')
+    },
+    executors={
+        'default': ThreadPoolExecutor(20)
+    },
+    job_defaults={
+        'coalesce': False,
+        'max_instances': 3
+    }
+)
+app.permanent_session_lifetime = timedelta(minutes=int(os.getenv("SESSION_MINUTES", "60")))
+app.secret_key = os.getenv('SECRET_KEY')
+db_config = {
+    "host": os.getenv("MYSQL_HOST"),
+    "user": os.getenv("MYSQL_USER"),
+    "password": os.getenv("MYSQL_PASSWORD"),
+    "database": os.getenv("MYSQL_DATABASE"),
+    "port": int(os.getenv("MYSQL_PORT")),
+    "ssl_disabled": False
+}
+
+db = mysql.connector.connect(**db_config)
+
+def q(query, params=None, fetchone=False, fetchall=False, many=False, commit=False):
+    global db
+    max_retries = 3
+    retry_count = 0
     
-    body {
-      margin: 0;
-      padding: 0;
-      font-family: Arial, sans-serif;
-      background: linear-gradient(120deg, #fafbf8 0%, #e4e6e4 100%);
-      background-size: cover;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
-    }
+    while retry_count < max_retries:
+        try:
+            if not db.is_connected():
+                print("Reconnecting to database...")
+                db = mysql.connector.connect(**db_config)
+            
+            cur = db.cursor(dictionary=True)
+            if many:
+                cur.executemany(query, params or [])
+            else:
+                cur.execute(query, params or ())
+            if commit:
+                db.commit()
+            if fetchone:
+                return cur.fetchone()
+            if fetchall:
+                return cur.fetchall()
+            return cur
+            
+        except mysql.connector.Error as err:
+            retry_count += 1
+            print(f"Database error: {err}, attempt {retry_count} of {max_retries}")
+            if retry_count == max_retries:
+                raise
+            time.sleep(1)  
+            try:
+                db = mysql.connector.connect(**db_config)
+            except:
+                continue
 
-    h1 {
-      text-align: center;
-      color: black;
-      margin-top: 0px;
-      font-size: 45px;
-    }
+if MAIL_AVAILABLE:
+    app.config.update(
+        MAIL_SERVER=os.getenv("MAIL_SERVER", "smtp.gmail.com"),
+        MAIL_PORT=int(os.getenv("MAIL_PORT", "587")),
+        MAIL_USE_TLS=True if os.getenv("MAIL_USE_TLS", "1") == "1" else False,
+        MAIL_USE_SSL=True if os.getenv("MAIL_USE_SSL", "0") == "1" else False,
+        MAIL_USERNAME=os.getenv("MAIL_USERNAME"),
+        MAIL_PASSWORD=os.getenv("MAIL_PASSWORD"),
+        MAIL_DEFAULT_SENDER=os.getenv("MAIL_DEFAULT_SENDER", os.getenv("MAIL_USERNAME")),
+    )
+    mail = Mail(app)
+else:
+    mail = None
 
-    .login-container {
-      background: rgba(255, 255, 255, 0.3);
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
-      backdrop-filter: blur(15px);
-      -webkit-backdrop-filter: blur(15px);
-      border-radius: 16px;
-      padding: 35px 30px;
-      color: #000;
-      border: 1px solid rgba(255, 255, 255, 0.25);
-      transition: all 0.3s ease-in-out;
+def send_email(to, subject, body):
+    if not MAIL_AVAILABLE or not mail or not to:
+        return False
+    try:
+        msg = Message(subject, recipients=[to])
+        msg.body = body
+        mail.send(msg)
+        return True
+    except Exception:
+        return False
+
+
+def login_required(f):
+    @wraps(f)
+    def wrap(*args, **kwargs):
+        if "user" not in session:
+            return redirect(url_for("login"))
+        session.permanent = True
+        return f(*args, **kwargs)
+    return wrap
+
+def role_required(*roles):
+    def deco(f):
+        @wraps(f)
+        def wrap(*args, **kwargs):
+            user = session.get("user")
+            if not user or user.get("role") not in roles:
+                flash("Unauthorized")
+                return redirect(url_for("login"))
+            return f(*args, **kwargs)
+        return wrap
+    return deco
+
+def log_action(role, user_id, action):
+    q("INSERT INTO audit_logs (role, user_id, action) VALUES (%s,%s,%s)", (role, user_id, action))
+
+def weekday_name(date_str):
+    dt = datetime.strptime(date_str, "%Y-%m-%d").date()
+    return ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][dt.weekday()]
+
+def time_to_str(t: dt_time):
+    return t.strftime("%H:%M:%S")
+
+def str_to_time(s: str) -> dt_time:
+    return datetime.strptime(s, "%H:%M:%S").time()
+
+def generate_slots(start: dt_time, end: dt_time, step_minutes=15):
+    slots = []
+    cur = datetime.combine(datetime.today(), start)
+    end_dt = datetime.combine(datetime.today(), end)
+    delta = timedelta(minutes=step_minutes)
+    while cur + delta <= end_dt:
+        slots.append(cur.time().strftime("%H:%M:%S"))
+        cur += delta
+    return slots
+  
+SEED_SQL = [
+    (
+        "INSERT IGNORE INTO departments (name) VALUES (%s)",
+        [("Cardiology",), ("Neurology",), ("Orthopedics",), ("Pediatrics",), ("Dermatology",)]
+    )
+]
+
+@app.route("/init_db")
+def init_db():
+    # Run your seed SQL if any
+    for query, data in SEED_SQL:
+        try:
+            q(query, data, many=True, commit=True)
+        except Exception as e:
+            print(f"Seed insert skipped: {e}")
+
+    # Delete old admin users (optional, if you want a clean reset)
+    try:
+        q("DELETE FROM users WHERE role='admin'", commit=True)
+        print("Old admin users deleted successfully.")
+    except Exception as e:
+        print(f"Error deleting old admins: {e}")
+
+    # Check if admin already exists
+    user = q(
+        "SELECT id FROM users WHERE email=%s LIMIT 1",
+        ("PankajaChavan@1965.com",),
+        fetchone=True
+    )
+
+    if not user:
+        pwd_hash = generate_password_hash("Pankaja1965")
+        try:
+            q(
+                "INSERT INTO users (role, name, email, password_hash) VALUES (%s, %s, %s, %s)",
+                ("admin", "Pankaja", "PankajaChavan@1965.com", pwd_hash),
+                commit=True
+            )
+            flash("Default admin created: PankajaChavan@1965.com / your password")
+        except Exception as e:
+            print(f"Error creating admin: {e}")
+            flash("Failed to create admin. Check logs.")
+    else:
+        flash("Admin already exists. Login with PankajaChavan@1965.com / your password")
+
+    return redirect(url_for("login"))
+
+def schedule_appointment_reminders(appointment_id):
+    try:
+        appt = q("""
+            SELECT a.*, d.name as doctor_name, p.id as patient_id, 
+                   p.reminders_enabled,
+                   p.email as patient_email, p.name as patient_name,
+                   DATE_FORMAT(a.appointment_date, '%Y-%m-%d') as formatted_date,
+                   TIME_FORMAT(a.appointment_time, '%H:%i') as formatted_time
+            FROM appointments a
+            JOIN users d ON d.id = a.doctor_id
+            JOIN users p ON p.id = a.patient_id
+            WHERE a.id = %s
+        """, (appointment_id,), fetchone=True)
         
-      width: 350px;
-      margin: 60px auto;
-
-    }
-    .login-container:hover{
-        transform: scale(1.02);
-    }
-    label {
-      font-weight: bold;
-      display: block;
-      margin-top: 10px;
-      margin-bottom: 5px;
-    }
-
-    input[type="email"],
-    input[type="password"] {
-      width: 100%;
-      padding: 10px;
-      margin-bottom: 15px;
-      border: 1px solid #ccc;
-      border-radius: 5px;
-    }
-
-    button {
-      width: 100%;
-      padding: 10px;
-      font-size: 16px;
-      border: none;
-      color: white;
-      border-radius: 5px;
-      margin-top: 10px;
-      cursor: pointer;
-      transition: background 0.3s ease;
-    }
-
-    .login-btn {
-      background-color: #d35400;
-    }
-
-    .register-btn {
-      background-color: #558b2f;
-    }
-
-    .login-btn:hover {
-      background-color: #e67e22;
-    }
-
-    .register-btn:hover {
-      background-color: #66bb6a;
-    }
-
-    ul {
-      color: red;
-      padding-left: 0;
-      list-style: none;
-      margin-top: 10px;
-      text-align: center;
-    }
-  </style>
-</head>
-<body>
-
-  <h1>Appointment Booking Portal</h1>
-
-  {% with messages = get_flashed_messages() %}
-    {% if messages %}
-      <ul>{% for message in messages %}<li>{{ message }}</li>{% endfor %}</ul>
-    {% endif %}
-  {% endwith %}
-
-  <div class="login-container">
-    <form method="POST" action="/login">
-      <label for="email">Email:</label>
-      <input type="email" name="email" id="email" placeholder="you@example.com" required>
-
-      <label for="password">Password:</label>
-      <input type="password" name="password" id="password" placeholder="Enter your password" required>
-
-      <button type="submit" class="login-btn">Login</button>
-    </form>
-
-    <form action="/register">
-      <button type="submit" class="register-btn">Register</button>
-    </form>
-  </div>
-
-</body>
-</html>
-
-'''
-
-register_page = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Hospital Registration</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
-
-  <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-      font-family: 'Poppins', sans-serif;
-    }
-
-    body {
-      background: url('d7316505-0f58-4235-b1c3-c62304059ef7.png') no-repeat center center fixed;
-      background-size: cover;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      min-height: 100vh;
-      padding: 20px;
-    }
-
-    h2 {
-      color: #0a0a0a;
-      font-size: 48px;
-      margin-bottom: 20px;
-      text-shadow: 1px 1px 2px #fff;
-      text-align: center;
-    }
-
-    .form-box {
-      background: rgba(255, 255, 255, 0.95);
-      padding: 35px 30px;
-      border-radius: 15px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
-      width: 100%;
-      max-width: 400px;
-    }
-
-    label {
-      font-weight: 600;
-      margin-bottom: 8px;
-      display: block;
-    }
-
-    select, input {
-      width: 100%;
-      padding: 10px;
-      margin-bottom: 18px;
-      border: 1px solid #ccc;
-      border-radius: 8px;
-      font-size: 16px;
-    }
-
-    .btn {
-      width: 100%;
-      padding: 12px;
-      margin-top: 10px;
-      font-size: 16px;
-      font-weight: bold;
-      border: none;
-      border-radius: 8px;
-      cursor: pointer;
-      transition: 0.3s;
-    }
-
-    .register-btn {
-      background-color: #388e3c;
-      color: white;
-    }
-
-    .register-btn:hover {
-      background-color: #43a047;
-    }
-
-    .login-btn {
-      background-color: #d84315;
-      color: white;
-    }
-
-    .login-btn:hover {
-      background-color: #e64a19;
-    }
-
-    @media (max-width: 500px) {
-      h2 {
-        font-size: 36px;
-      }
-
-      .form-box {
-        padding: 25px 20px;
-      }
-    }
-  </style>
-</head>
-<body>
-
-  <h2>Register</h2>
-
-  <div class="form-box">
-    <form method="POST" action="/register">
-      <label for="role">Select Role</label>
-      <select name="role" id="role" required>
-        <option value="admin">Admin</option>
-        <option value="doctor">Doctor</option>
-        <option value="patient">Patient</option>
-      </select>
-
-      <label for="name">Full Name</label>
-      <input type="text" id="name" name="name" placeholder="Enter your name" required>
-
-      <label for="email">Email Address</label>
-      <input type="email" id="email" name="email" placeholder="Enter your email" required>
-
-      <label for="password">Password</label>
-      <input type="password" id="password" name="password" placeholder="Create a password" required>
-
-      <button type="submit" class="btn register-btn">Register</button>
-      <button type="button" class="btn login-btn" onclick="window.location.href='/login'">Back to Login</button>
-    </form>
-  </div>
-
-</body>
-</html>
-
-'''
-
-dashboard_admin_template = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Admin Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <!-- Google Font -->
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
-
-  <style>
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      margin: 0;
-      font-family: 'Poppins', sans-serif;
-      background: url('https://www.transparenttextures.com/patterns/grey-sandbag.png'), #e3eaf0;
-      background-size: cover;
-      background-repeat: repeat;
-      padding: 40px 20px;
-      color: #2c3e50;
-    }
-
-    .dashboard {
-      max-width: 1100px;
-      margin: auto;
-      background: rgba(255, 255, 255, 0.96);
-      border-radius: 16px;
-      padding: 30px 40px;
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15);
-      animation: fadeIn 0.6s ease-in-out;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    h2 {
-      text-align: center;
-      font-size: 2.3em;
-      margin-bottom: 10px;
-      color: #2c3e50;
-    }
-
-    .welcome {
-      text-align: right;
-      font-size: 15px;
-      margin-bottom: 25px;
-    }
-
-    .welcome a {
-      color: #e74c3c;
-      text-decoration: none;
-      font-weight: 600;
-      transition: color 0.3s ease;
-    }
-
-    .welcome a:hover {
-      color: #c0392b;
-    }
-
-    h3 {
-      font-size: 1.5em;
-      color: #34495e;
-      border-left: 5px solid #3498db;
-      padding-left: 15px;
-      margin-bottom: 20px;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: separate;
-      border-spacing: 0 12px;
-    }
-
-    thead th {
-      background-color: #3498db;
-      color: white;
-      padding: 14px 16px;
-      text-align: left;
-      font-size: 15px;
-      border-top-left-radius: 8px;
-      border-top-right-radius: 8px;
-    }
-
-    tbody tr {
-      background-color: #f7f9fa;
-      border-radius: 8px;
-      transition: transform 0.2s ease, box-shadow 0.2s ease;
-    }
-
-    tbody tr:hover {
-      transform: scale(1.005);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-    }
-
-    tbody tr.done {
-      background-color: #dff0d8; /* light green */
-    }
-
-    tbody td {
-      padding: 14px 16px;
-      font-size: 14.5px;
-      color: #2c3e50;
-    }
-
-    .badge {
-      padding: 5px 10px;
-      font-size: 12px;
-      border-radius: 12px;
-      font-weight: 600;
-      display: inline-block;
-    }
-
-    .badge.done {
-      background-color: #27ae60;
-      color: white;
-    }
-
-    .badge.pending {
-      background-color: #e67e22;
-      color: white;
-    }
-
-    .reschedule-btn {
-      background-color: #e74c3c;
-      border: none;
-      color: white;
-      padding: 6px 10px;
-      font-size: 12px;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: background-color 0.3s;
-    }
-
-    .reschedule-btn:hover {
-      background-color: #c0392b;
-    }
-
-    .no-data {
-      text-align: center;
-      padding: 20px;
-      color: #777;
-      font-style: italic;
-    }
-
-    @media (max-width: 768px) {
-      .dashboard {
-        padding: 20px;
-      }
-
-      h2 {
-        font-size: 1.8em;
-      }
-
-      table, thead, tbody, th, td, tr {
-        display: block;
-      }
-
-      thead {
-        display: none;
-      }
-
-      tbody tr {
-        margin-bottom: 15px;
-        padding: 10px;
-        border: 1px solid #ddd;
-        border-radius: 8px;
-      }
-
-      tbody td {
-        display: flex;
-        justify-content: space-between;
-        padding: 10px;
-        font-size: 14px;
-      }
-
-      tbody td::before {
-        content: attr(data-label);
-        font-weight: bold;
-        color: #555;
-        margin-right: 10px;
-      }
-    }
-  </style>
-</head>
-<body>
-
-  <div class="dashboard">
-    <h2>Admin Dashboard</h2>
-    <p class="welcome">
-      Welcome {{ session.user['name'] }} |
-      <a href="/logout">Logout</a>
-    </p>
-
-    <h3>All Appointments</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Patient</th>
-          <th>Doctor</th>
-          <th>Date</th>
-          <th>Time</th>
-          <th>Status</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for a in appointments %}
-        <tr class="{% if a.status == 'done' %}done{% endif %}">
-          <td data-label="ID">{{ a.id }}</td>
-          <td data-label="Patient">{{ a.patient_name }}</td>
-          <td data-label="Doctor">{{ a.doctor_name }}</td>
-          <td data-label="Date">{{ a.appointment_date }}</td>
-          <td data-label="Time">{{ a.appointment_time }}</td>
-          <td data-label="Status">
-            {% if a.status == 'done' %}
-              <span class="badge done">Done</span>
-            {% else %}
-              <span class="badge pending">Pending</span>
-            {% endif %}
-          </td>
-          <td data-label="Action">
-            {% if a.status == 'done' and not a.finalized %}
-              <form method="POST" action="/admin/finalize/{{ a.id }}">
-                <button type="submit" class="reschedule-btn">Done</button>
-              </form>
-            {% elif a.status != 'done' %}
-              <!-- Hide or disable: doctor hasn't checked yet -->
-              <span style="color: #999;">Waiting for doctor</span>
-            {% else %}
-              —
-            {% endif %}
-          </td>
-        </tr>
-        {% else %}
-        <tr>
-          <td class="no-data" colspan="7">No appointments found.</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-
-</body>
-</html>
-'''
-
-dashboard_doctor_template = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Doctor Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-  <!-- Google Fonts -->
-  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
-
-  <style>
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      font-family: 'Poppins', sans-serif;
-      margin: 0;
-      padding: 40px 20px;
-      background: url('https://www.transparenttextures.com/patterns/white-wall-3.png'), #e6f0f7;
-      background-size: cover;
-      color: #2c3e50;
-    }
-
-    .dashboard {
-      max-width: 1000px;
-      margin: auto;
-      background: rgba(255, 255, 255, 0.95);
-      padding: 30px 40px;
-      border-radius: 16px;
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
-      animation: fadeIn 0.5s ease;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(15px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    h2 {
-      text-align: center;
-      font-size: 2.2em;
-      margin-bottom: 5px;
-    }
-
-    .welcome {
-      text-align: right;
-      font-size: 14px;
-      margin-bottom: 25px;
-    }
-
-    .welcome a {
-      color: #e74c3c;
-      font-weight: 600;
-      text-decoration: none;
-    }
-
-    .welcome a:hover {
-      text-decoration: underline;
-    }
-
-    h3 {
-      font-size: 1.5em;
-      margin-bottom: 15px;
-      color: #34495e;
-      border-left: 5px solid #3498db;
-      padding-left: 12px;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: separate;
-      border-spacing: 0 10px;
-    }
-
-    thead th {
-      background-color: #3498db;
-      color: white;
-      padding: 12px;
-      text-align: left;
-      font-size: 15px;
-      border-radius: 6px;
-    }
-
-    tbody tr {
-      background-color: #f9f9f9;
-      border-radius: 6px;
-      transition: all 0.2s;
-    }
-
-    tbody tr.done {
-      background-color: #d5f5e3; /* Light green */
-    }
-
-    tbody tr:hover {
-      transform: scale(1.003);
-      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.06);
-    }
-
-    tbody td {
-      padding: 12px;
-      font-size: 14.5px;
-    }
-
-    .badge {
-      padding: 5px 10px;
-      border-radius: 12px;
-      font-weight: 600;
-      font-size: 12px;
-      display: inline-block;
-    }
-
-    .badge.done {
-      background-color: #27ae60;
-      color: white;
-    }
-
-    .badge.pending {
-      background-color: #f39c12;
-      color: white;
-    }
-
-    .Check-btn {
-      background-color: #e74c3c;
-      border: none;
-      padding: 6px 12px;
-      font-size: 12px;
-      color: white;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: background 0.3s;
-    }
-
-    .Check-btn:hover {
-      background-color: #c0392b;
-    }
-
-    .no-data {
-      text-align: center;
-      font-style: italic;
-      padding: 20px;
-      color: #666;
-    }
-
-    @media (max-width: 768px) {
-      table, thead, tbody, th, td, tr {
-        display: block;
-      }
-
-      thead {
-        display: none;
-      }
-
-      tbody tr {
-        margin-bottom: 15px;
-        border: 1px solid #ddd;
-        border-radius: 6px;
-        padding: 12px;
-      }
-
-      tbody td {
-        display: flex;
-        justify-content: space-between;
-        padding: 10px;
-      }
-
-      tbody td::before {
-        content: attr(data-label);
-        font-weight: 600;
-        margin-right: 10px;
-        color: #34495e;
-      }
-    }
-  </style>
-</head>
-<body>
-
-  <div class="dashboard">
-    <h2>Doctor Dashboard</h2>
-    <p class="welcome">Welcome Dr. {{ session.user['name'] }} | <a href="/logout">Logout</a></p>
-
-    <h3>Your Appointments</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Patient</th>
-          <th>Date</th>
-          <th>Time</th>
-          <th>Status</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for a in appointments %}
-        <tr class="{% if a.status == 'done' %}done{% endif %}">
-          <td data-label="Patient">{{ a.patient_name }}</td>
-          <td data-label="Date">{{ a.appointment_date }}</td>
-          <td data-label="Time">{{ a.appointment_time }}</td>
-          <td data-label="Status">
-            {% if a.status == 'done' %}
-              <span class="badge done">Done</span>
-            {% else %}
-              <span class="badge pending">Pending</span>
-            {% endif %}
-          </td>
-          <td data-label="Action">
-            {% if a.status != 'done' %}
-              <form method="POST" action="/doctor/Check/{{ a.id }}">
-                <button type="submit" class="Check-btn">Check</button>
-              </form>
-            {% else %}
-              —
-            {% endif %}
-          </td>
-        </tr>
-        {% else %}
-        <tr>
-          <td class="no-data" colspan="5">No appointments found.</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-
-</body>
-</html>
-'''
-
-dashboard_patient_template = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>Patient Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap" rel="stylesheet" />
-
-  <style>
-    * {
-      box-sizing: border-box;
-    }
-
-    body {
-      font-family: 'Roboto', sans-serif;
-      margin: 0;
-      padding: 40px 20px;
-      background: linear-gradient(to right, #e0f7fa, #f1f8e9);
-      color: #2c3e50;
-    }
-
-    .dashboard {
-      max-width: 1000px;
-      margin: auto;
-      background: white;
-      padding: 30px 40px;
-      border-radius: 16px;
-      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.08);
-      animation: fadeIn 0.6s ease-in-out;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(20px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    h2 {
-      text-align: center;
-      font-size: 2.4em;
-      margin-bottom: 10px;
-    }
-
-    .welcome {
-      text-align: right;
-      font-size: 14px;
-      margin-bottom: 20px;
-    }
-
-    .welcome a {
-      color: #e74c3c;
-      font-weight: 600;
-      text-decoration: none;
-    }
-
-    .book-btn {
-      display: inline-block;
-      background-color: #3498db;
-      color: white;
-      padding: 12px 22px;
-      border-radius: 10px;
-      text-decoration: none;
-      font-weight: 600;
-      margin: 10px 0 30px 0;
-      transition: all 0.3s ease;
-      box-shadow: 0 4px 14px rgba(52, 152, 219, 0.3);
-    }
-
-    .book-btn:hover {
-      background-color: #2980b9;
-      transform: translateY(-2px);
-      box-shadow: 0 6px 20px rgba(52, 152, 219, 0.4);
-    }
-
-    h3 {
-      font-size: 1.6em;
-      margin-bottom: 15px;
-      color: #34495e;
-      border-left: 6px solid #2ecc71;
-      padding-left: 12px;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: separate;
-      border-spacing: 0 10px;
-    }
-
-    thead th {
-      background-color: #2ecc71;
-      color: white;
-      padding: 12px;
-      text-align: left;
-      font-size: 15px;
-      border-radius: 6px;
-    }
-
-    tbody tr {
-      background-color: #f9f9f9;
-      border-radius: 6px;
-      transition: all 0.2s;
-    }
-
-    tbody tr:hover {
-      transform: scale(1.003);
-      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
-    }
-
-    tbody td {
-      padding: 12px;
-      font-size: 15px;
-    }
-
-    .cancel-btn {
-      background-color: #e74c3c;
-      border: none;
-      padding: 6px 12px;
-      font-size: 13px;
-      color: white;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: background 0.3s;
-    }
-
-    .cancel-btn:hover {
-      background-color: #c0392b;
-    }
-
-    .no-data {
-      text-align: center;
-      font-style: italic;
-      padding: 20px;
-      color: #666;
-    }
-
-    @media (max-width: 768px) {
-      table, thead, tbody, th, td, tr {
-        display: block;
-      }
-
-      thead {
-        display: none;
-      }
-
-      tbody tr {
-        margin-bottom: 15px;
-        border: 1px solid #ddd;
-        border-radius: 6px;
-        padding: 12px;
-      }
-
-      tbody td {
-        display: flex;
-        justify-content: space-between;
-        padding: 10px;
-        font-size: 14px;
-      }
-
-      tbody td::before {
-        content: attr(data-label);
-        font-weight: 600;
-        margin-right: 10px;
-        color: #34495e;
-      }
-    }
-  </style>
-</head>
-<body>
-
-  <div class="dashboard">
-    <h2>Patient Dashboard</h2>
-    <p class="welcome">Welcome {{ session.user['name'] }} | <a href="/logout">Logout</a></p>
-
-    <a href="/book" class="book-btn">➕ Book Appointment</a>
-
-    <h3>Your Appointments</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Doctor</th>
-          <th>Date</th>
-          <th>Time</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for a in appointments %}
-        <tr>
-          <td data-label="Doctor">{{ a.doctor_name }}</td>
-          <td data-label="Date">{{ a.appointment_date }}</td>
-          <td data-label="Time">{{ a.appointment_time }}</td>
-          <td data-label="Action">
-            <form method="POST" action="/cancel/{{ a.id }}" style="margin: 0;">
-              <button type="submit" class="cancel-btn">Cancel</button>
-            </form>
-          </td>
-        </tr>
-        {% else %}
-        <tr>
-          <td class="no-data" colspan="4">No appointments found.</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-
-</body>
-</html>
-'''
-
-book_appointment_template = '''
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>Book Appointment</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-
-  <!-- Google Fonts -->
-  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;700&display=swap" rel="stylesheet" />
-
-  <!-- Flatpickr CSS -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/themes/material_blue.css" />
-
-  <style>
-    body {
-      margin: 0;
-      font-family: 'Nunito', sans-serif;
-      background: linear-gradient(135deg, #f5f7fa, #c3cfe2);
-      display: flex;
-      justify-content: center;
-      align-items: flex-start;
-      min-height: 100vh;
-      padding: 20px;
-      overflow-y: auto;
-    }
-
-    .card {
-      background: rgba(255, 255, 255, 0.95);
-      padding: 30px 25px;
-      border-radius: 18px;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1);
-      max-width: 500px;
-      width: 100%;
-      margin: auto;
-    }
-
-    h2 {
-      text-align: center;
-      color: #2c3e50;
-      margin-bottom: 20px;
-      font-size: 24px;
-    }
-
-    label {
-      display: block;
-      margin: 8px 0 4px;
-      font-weight: bold;
-      color: #34495e;
-    }
-
-    input,
-    select {
-      width: 100%;
-      padding: 12px;
-      font-size: 15px;
-      border-radius: 10px;
-      border: 1px solid #ccc;
-      margin-bottom: 15px;
-      box-sizing: border-box;
-    }
-
-    input[type='submit'] {
-      background: linear-gradient(135deg, #27ae60, #2ecc71);
-      color: white;
-      border: none;
-      cursor: pointer;
-      transition: transform 0.2s ease;
-      font-weight: bold;
-      font-size: 16px;
-    }
-
-    input[type='submit']:hover {
-      transform: scale(1.02);
-      background: linear-gradient(135deg, #229954, #27ae60);
-    }
-
-    .back-link {
-      display: block;
-      text-align: center;
-      margin-top: 12px;
-      text-decoration: none;
-      color: #2980b9;
-      font-weight: 600;
-    }
-
-    .back-link:hover {
-      color: #1c5980;
-    }
-
-    #timePeriod {
-      font-weight: bold;
-      font-size: 16px;
-      color: #8e44ad;
-      text-align: center;
-      margin-bottom: 15px;
-    }
-
-    /* Flex row for Age & Gender */
-    .row {
-      display: flex;
-      gap: 15px;
-      margin-bottom: 15px;
-    }
-
-    .row .field {
-      flex: 1;
-    }
-
-    /* Responsive for small screens */
-    @media (max-width: 500px) {
-      .row {
-        flex-direction: column;
-      }
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>Book Appointment</h2>
-    <form method="POST">
-      <label for="name">Full Name:</label>
-      <input type="text" id="name" name="name" placeholder="Enter your full name" required />
-
-      <div class="row">
-        <div class="field">
-          <label for="age">Age:</label>
-          <input type="number" id="age" name="age" placeholder="Enter your age" min="0" required />
-        </div>
-
-        <div class="field">
-          <label for="gender">Gender:</label>
-          <select id="gender" name="gender" required>
-            <option value="" disabled selected>-- Select gender --</option>
-            <option value="Male">Male</option>
-            <option value="Female">Female</option>
-            <option value="Other">Other</option>
-          </select>
-        </div>
-      </div>
-
-      <label for="doctor">Select Doctor:</label>
-      <select name="doctor_id" id="doctor" required>
-        <option value="" disabled selected>-- Choose a doctor --</option>
-        {% for doc in doctors %}
-          <option value="{{ doc.id }}">Dr. {{ doc.name }}</option>
-        {% endfor %}
-      </select>
-
-      <label for="date">Select Date:</label>
-      <input type="text" id="date" name="date" placeholder="Choose date" required />
-
-      <label for="time">Select Time:</label>
-      <input type="text" id="time" name="time" placeholder="Choose time" required />
-
-      <div id="timePeriod">—</div>
-
-      <input type="submit" value="Book Appointment" />
-    </form>
-
-    <a href="/dashboard_patient" class="back-link">← Back to Dashboard</a>
-  </div>
-
-  <!-- Flatpickr JS -->
-  <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
-  <script>
-  flatpickr("#date", {
-    dateFormat: "Y-m-d",
-    minDate: "today",
-    disableMobile: true
-  });
-
-  flatpickr("#time", {
-    enableTime: true,
-    noCalendar: true,
-    dateFormat: "h:i K", 
-    time_24hr: false,
-    disableMobile: true,
-    onChange: function(selectedDates, dateStr, instance) {
-      updateTimePeriod(dateStr);
-    }
-  });
-
-  function updateTimePeriod(timeStr) {
-    const timePeriodDiv = document.getElementById("timePeriod");
-    const hiddenInput = document.getElementById("time24");
-
-    if (!timeStr) {
-      timePeriodDiv.textContent = "—";
-      if (hiddenInput) hiddenInput.value = "";
-      return;
-    }
-
-    // Show 12-hour format (e.g., "02:15 PM")
-    timePeriodDiv.textContent = `You selected: ${timeStr}`;
-
-    // Convert to 24-hour format
-    const [time, meridian] = timeStr.split(" ");
-    const [hourStr, minuteStr] = time.split(":");
-    let hour = parseInt(hourStr);
-
-    if (meridian === "PM" && hour !== 12) hour += 12;
-    if (meridian === "AM" && hour === 12) hour = 0;
-
-    const hourFormatted = hour.toString().padStart(2, '0');
-    const time24 = `${hourFormatted}:${minuteStr}`;
-
-    // Store in hidden field if needed
-    if (hiddenInput) hiddenInput.value = time24;
-  }
-</script>
-</body>
-</html>
-'''
-
-
-@app.route('/')
-def home():
-    return redirect(url_for('login'))
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        role = request.form['role']
-        name = request.form['name']
-        email = request.form['email']
-        password = request.form['password']
-        cursor.execute("INSERT INTO users (role, name, email, password) VALUES (%s, %s, %s, %s)",
-                       (role, name, email, password))
-        conn.commit()
-        flash('Registered Successfully')
-        return redirect(url_for('login'))
-    return render_template_string(register_page)
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        email = request.form['email']
-        password = request.form['password']
-        cursor.execute("SELECT * FROM users WHERE email=%s AND password=%s", (email, password))
-        user = cursor.fetchone()
-        if user:
-            session['user'] = user
-            return redirect(url_for(f"dashboard_{user['role']}_view"))
+        if not appt:
+            print(f"No appointment found with ID {appointment_id}")
+            return
+            
+        print(f"Processing reminders for appointment {appointment_id}")
+        print(f"Patient reminders enabled: {appt.get('reminders_enabled')}")
+         
+        appt_datetime = datetime.strptime(
+            appt['formatted_date'] + ' ' + appt['formatted_time'], 
+            '%Y-%m-%d %H:%M'
+        )
+        reminder_2hr = appt_datetime - timedelta(hours=2)
+        reminder_30min = appt_datetime - timedelta(minutes=30)
+        
+        now = datetime.now()
+        
+        def send_appointment_reminder(appointment_data, reminder_type):
+
+            print("\n=== Appointment Reminder Debug ===")
+            print(f"Processing reminder for appointment {appointment_data['id']}")
+            print(f"Reminder type: {reminder_type}")
+            print(f"Patient: {appointment_data['patient_name']}")
+            print(f"Doctor: Dr. {appointment_data['doctor_name']}")
+            print(f"Appointment time: {appointment_data['formatted_time']}")
+            print(f"Patient email: {appointment_data['patient_email']}")
+            notification_data = {
+                'title': 'Appointment Reminder',
+                'message': (f"Your appointment with Dr. {appointment_data['doctor_name']} "
+                          f"is {'in 2 hours' if reminder_type == '2hour' else 'in 30 minutes'} "
+                          f"at {appointment_data['formatted_time']}"),
+                'appointment_id': appointment_data['id']
+            }
+            print("\nPrepared browser notification:")
+            print(f"Title: {notification_data['title']}")
+            print(f"Message: {notification_data['message']}")
+            print("=== End Reminder Debug ===\n")
+            
+            print(f"Browser notification prepared: {notification_data}")
+            return notification_data
+        
+        print(f"Current time: {now}")
+        print(f"2-hour reminder time: {reminder_2hr}")
+        print(f"30-min reminder time: {reminder_30min}")
+        
+        if reminder_2hr > now:
+            print(f"Scheduling 2-hour reminder for appointment {appointment_id}")
+            scheduler.add_job(
+                func=send_appointment_reminder,
+                trigger='date',
+                run_date=reminder_2hr,
+                kwargs={
+                    'appointment_data': appt,
+                    'reminder_type': '2hour'
+                },
+                id=f'reminder_2hr_{appointment_id}'
+            )
+            
+        if reminder_30min > now:
+            print(f"Scheduling 30-minute reminder for appointment {appointment_id}")
+            scheduler.add_job(
+                func=send_appointment_reminder,
+                trigger='date',
+                run_date=reminder_30min,
+                kwargs={
+                    'appointment_data': appt,
+                    'reminder_type': '30min'
+                },
+                id=f'reminder_30min_{appointment_id}'
+            )
+            
+    except Exception as e:
+        print(f"Error scheduling reminders: {str(e)}")
+
+@app.route('/set_reminder_preference', methods=['POST'])
+@login_required
+def set_reminder_preference():
+    try:
+        data = request.get_json()
+        enabled = data.get('enabled', False)
+
+        q("UPDATE users SET reminders_enabled = %s WHERE id = %s",
+          (enabled, session['user']['id']),
+          commit=True)
+        
+        return jsonify({'success': True})
+    except Exception as e:
+        print(f"Error setting reminder preference: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/send_reminder_sms', methods=['POST'])
+@login_required
+def send_reminder_sms():
+    try:
+        data = request.get_json()
+        appointment_id = data.get('appointment_id')
+        reminder_type = data.get('reminder_type')
+
+        appt = q("""
+            SELECT a.*, d.name as doctor_name, p.phone as patient_phone
+            FROM appointments a
+            JOIN users d ON d.id = a.doctor_id
+            JOIN users p ON p.id = a.patient_id
+            WHERE a.id = %s AND a.patient_id = %s
+        """, 
+        (appointment_id, session['user']['id']), fetchone=True)
+        
+        if not appt or not appt['patient_phone']:
+            return jsonify({'success': False, 'error': 'Invalid appointment or no phone number'}), 400
+        if reminder_type not in ['2hour', '30min']:
+            return jsonify({'success': False, 'error': 'Invalid reminder type'}), 400
+        if reminder_type == '2hour':
+            message = f"Reminder: Your appointment with Dr. {appt['doctor_name']} is in 2 hours at {appt['appointment_time']}"
         else:
-            flash('Invalid credentials')
-    return render_template_string(login_page)
+            message = f"Reminder: Your appointment with Dr. {appt['doctor_name']} is in 30 minutes at {appt['appointment_time']}"
+        print(f"Sending SMS to {appt['patient_phone']}: {message}")
+        if send_sms(appt['patient_phone'], message):
+            return jsonify({'success': True})
+        else:
+            return jsonify({'success': False, 'error': 'Failed to send SMS'}), 500
+            
+    except Exception as e:
+        print(f"Error sending reminder SMS: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/logout')
+def start_scheduler():
+    global scheduler
+    
+    try:
+        if scheduler and scheduler.running:
+            print("Scheduler already running")
+            return
+            
+        print(f"Attempting to start scheduler with URL: {db_url}")
+        scheduler.start(paused=True)  
+        try:
+            scheduler._jobstores['default'].get_due_jobs(now=datetime.now())
+            scheduler.resume()  
+            print("Scheduler started successfully")
+        except Exception as db_err:
+            print(f"Scheduler database error: {db_err}")
+            scheduler.shutdown()
+            scheduler = None  
+            
+    except Exception as e:
+        print(f"Error starting scheduler: {str(e)}")
+        scheduler = None 
+
+start_scheduler()
+
+@app.route("/")
+def home():
+    return redirect(url_for("login"))
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        email = request.form["email"].strip().lower()
+        password = request.form["password"]
+
+        user = q("SELECT * FROM users WHERE email=%s", (email,), fetchone=True)
+        if not user or not check_password_hash(user["password_hash"], password):
+            flash("Invalid credentials")
+            return render_template('login.html')
+
+        session["user"] = user
+        log_action(user["role"], user["id"], "login")
+
+        if user["role"] == "admin":
+            return redirect(url_for("dashboard_admin_view"))
+        elif user["role"] == "doctor":
+            return redirect(url_for("dashboard_doctor_view"))
+        else:
+            return redirect(url_for("dashboard_patient_view"))
+
+    return render_template('login.html')
+
+@app.route("/logout")
 def logout():
-    session.pop('user', None)
-    return redirect(url_for('login'))
+    u = session.get("user")
+    if u:
+        log_action(u["role"], u["id"], "logout")
+    session.pop("user", None)
+    flash("Logged out successfully")
+    return redirect(url_for("login"))
 
-@app.route('/dashboard_admin')
-def dashboard_admin_view():
-    if 'user' not in session or session['user'].get('role') != 'admin':
-        return redirect(url_for('login'))
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    
+    departments = q("SELECT * FROM departments ORDER BY name", fetchall=True) or []
 
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute('''
-        SELECT a.*, 
-               p.name AS patient_name, 
-               d.name AS doctor_name 
-        FROM appointments a 
-        JOIN users p ON a.patient_id = p.id 
-        JOIN users d ON a.doctor_id = d.id
-    ''')
-    appointments = cursor.fetchall()
-    cursor.close()
+    if request.method == "POST":
+        role = request.form["role"]
+        name = request.form["name"].strip()
+        email = request.form["email"].strip().lower()
+        password = request.form["password"]
+        department_id = request.form.get("department_id") if role == "doctor" else None
+        fee = float(request.form.get("fee", 0)) if role == "doctor" else 0
 
-    return render_template_string(dashboard_admin_template, appointments=appointments)
+        if q("SELECT id FROM users WHERE email=%s", (email,), fetchone=True):
+            flash("Email already registered")
+            return render_template('register.html', departments=departments)
 
-@app.route('/register_admin', methods=['POST'])
-def register_admin():
-    name = request.form['name']
-    email = request.form['email']
-    password = request.form['password']
-    cursor = conn.cursor()
+        pwd_hash = generate_password_hash(password)
 
-    cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
-    admin_count = cursor.fetchone()[0]
+        q(
+            "INSERT INTO users (role, name, email, password_hash, department_id, fee) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (role, name, email, pwd_hash, department_id, fee),
+            commit=True
+        )
 
-    if admin_count >= 1:
-        flash("Admin already exists. Only one admin allowed.")
-        cursor.close()
-        return redirect(url_for('register'))
+        flash("Account created successfully!")
+        return redirect(url_for("login"))
 
-    cursor.execute('''
-        INSERT INTO users (role, name, email, password)
-        VALUES (%s, %s, %s, %s)
-    ''', ('admin', name, email, password))
+    return render_template('register.html', departments=departments)
 
-    conn.commit()
-    cursor.close()
-
-    flash("Admin registered successfully!")
-    return redirect(url_for('login'))
-
-@app.route('/dashboard_doctor')
-def dashboard_doctor_view():
-    if session['user']['role'] != 'doctor':
-        return redirect(url_for('login'))
-
-    doctor_id = session['user']['id']
-    cursor.execute('''
-        SELECT a.*, 
-               p.name AS patient_name 
-        FROM appointments a 
-        JOIN users p ON a.patient_id = p.id 
-        WHERE a.doctor_id = %s AND a.finalized = FALSE
-    ''', (doctor_id,))
-    appointments = cursor.fetchall()
-    return render_template_string(dashboard_doctor_template, appointments=appointments)
-
-@app.route('/dashboard_patient')
+@app.route("/dashboard_patient")
+@login_required
+@role_required("patient")
 def dashboard_patient_view():
-    if session['user']['role'] != 'patient':
-        return redirect(url_for('login'))
+    pid = session["user"]["id"]
+    cur = q("""
+        SELECT a.*, d.name AS doctor_name, dp.name AS department_name,
+               (SELECT id FROM prescriptions p WHERE p.appointment_id=a.id LIMIT 1) AS prescription_id,
+               u.fee, a.telemedicine
+        FROM appointments a
+        JOIN users d ON d.id=a.doctor_id
+        LEFT JOIN departments dp ON dp.id=d.department_id
+        LEFT JOIN users u ON u.id=a.doctor_id
+        WHERE a.patient_id=%s
+        ORDER BY a.appointment_date DESC, a.appointment_time DESC
+    """, (pid,))
+    appointments = cur.fetchall()
+    return render_template('dashboard_patient.html', appointments=appointments)
 
-    patient_id = session['user']['id']
-    cursor.execute('''
-        SELECT a.*, 
-               d.name AS doctor_name 
-        FROM appointments a 
-        JOIN users d ON a.doctor_id = d.id 
-        WHERE a.patient_id = %s AND a.finalized = FALSE
-    ''', (patient_id,))
-    appointments = cursor.fetchall()
-    return render_template_string(dashboard_patient_template, appointments=appointments)
-
-@app.route('/book', methods=['GET', 'POST'])
+@app.route("/book", methods=["GET","POST"])
+@login_required
+@role_required("patient")
 def book():
-    if request.method == 'POST':
-        patient_id = session['user']['id']
-        doctor_id = request.form['doctor_id']
-        date = request.form['date']
-        time_raw = request.form['time']  
+    if request.method == "POST":
+        pid = session["user"]["id"]
 
         try:
-            time_converted = datetime.strptime(time_raw, "%I:%M %p").strftime("%H:%M:%S")
-        except ValueError:
-            flash("Invalid time format.")
-            return redirect(url_for('book'))
+            
+            doc_id = request.form.get("doctor_id")
+            date = request.form.get("date")
+            time = request.form.get("time")
+            emergency = request.form.get("emergency", "0")
+            telemedicine = request.form.get("telemedicine", "0")
 
-        cursor.execute("""
-            INSERT INTO appointments (patient_id, doctor_id, appointment_date, appointment_time)
-            VALUES (%s, %s, %s, %s)
-        """, (patient_id, doctor_id, date, time_converted))
-        conn.commit()
+            if not doc_id or not date or not time:
+                raise ValueError("Doctor, date and time are required")
 
-        flash('Appointment Booked')
-        return redirect(url_for('dashboard_patient_view'))
+            print("Form data received:", {
+                'patient_id': pid,
+                'doctor_id': doc_id,
+                'date': date,
+                'time': time,
+                'emergency': emergency,
+                'telemedicine': telemedicine
+            })
 
-    cursor.execute("SELECT * FROM users WHERE role='doctor'")
-    doctors = cursor.fetchall()
-    return render_template_string(book_appointment_template, doctors=doctors)
+            doctor = q(
+                "SELECT department_id FROM users WHERE id=%s AND role='doctor'",
+                (doc_id,), fetchone=True
+            )
+            if not doctor or not doctor['department_id']:
+                raise ValueError("Invalid doctor or no department assigned")
 
-@app.route('/reschedule/<int:appointment_id>', methods=['POST'])
-def reschedule(appointment_id):
-    cursor.execute("UPDATE appointments SET status='done' WHERE id=%s", (appointment_id,))
-    conn.commit()
-    flash('Appointment marked as done')
+            dept_id = doctor['department_id']
+            print("Found doctor's department_id:", dept_id)
+            appt_date = datetime.strptime(date, "%Y-%m-%d").date()
+            dup = q("""SELECT id FROM appointments 
+                       WHERE doctor_id=%s AND appointment_date=%s 
+                       AND appointment_time=%s AND status!='cancelled'""",
+                    (doc_id, date, time), fetchall=True)
+            if dup:
+                raise ValueError("Slot already booked, please pick another")
 
-    role = session['user']['role']
-    
-    routes = {
-        'admin': 'dashboard_admin_view',
-        'doctor': 'dashboard_doctor_view'
-    }
+            q("""INSERT INTO appointments 
+                    (patient_id, doctor_id, department_id, appointment_date, appointment_time, emergency, telemedicine, status) 
+                 VALUES (%s,%s,%s,%s,%s,%s,%s,'booked')""",
+              (pid, doc_id, dept_id, date, time, emergency, telemedicine),
+              commit=True)
 
-    for r in routes:
-        if role == r:
-            return redirect(url_for(routes[r]))
-    return redirect(url_for('login'))
+            appointment_id = q("SELECT LAST_INSERT_ID()", fetchone=True)['LAST_INSERT_ID()']
 
+            try:
+                schedule_appointment_reminders(appointment_id)
+                print(f"Reminders scheduled for appointment {appointment_id}")
+            except Exception as e:
+                print(f"Error scheduling reminders: {e}")
 
-@app.route('/cancel/<int:appointment_id>', methods=['POST'])
+            flash("Appointment booked successfully")
+            return redirect(url_for("dashboard_patient_view"))
+
+        except ValueError as e:
+            flash(str(e))
+            return redirect(url_for("book"))
+        except Exception as e:
+            print("Booking error:", str(e))
+            flash("Booking error: " + str(e))
+            return redirect(url_for("book"))
+
+    departments = q("SELECT id,name FROM departments ORDER BY name", fetchall=True)
+    return render_template('book_appointment.html', departments=departments)
+
+@app.route("/cancel/<int:appointment_id>", methods=["POST"])
+@login_required
+@role_required("patient")
 def cancel_appointment(appointment_id):
-    cursor.execute("DELETE FROM appointments WHERE id = %s", (appointment_id,))
-    conn.commit()
-    flash("Appointment cancelled successfully.")
-    return redirect(url_for('dashboard_patient_view'))
+    pid = session["user"]["id"]
+    q("UPDATE appointments SET status='cancelled' WHERE id=%s AND patient_id=%s", (appointment_id, pid))
+    log_action("patient", pid, f"Cancelled appointment {appointment_id}")
+    flash("Appointment cancelled.")
+    return redirect(url_for("dashboard_patient_view"))
+
+@app.route("/start_video_call/<int:appointment_id>", methods=["POST"])
+@login_required
+def start_video_call(appointment_id):
+    
+    query = """
+        SELECT a.*, d.name as doctor_name,
+               DATE_FORMAT(a.appointment_date, '%Y-%m-%d') as formatted_date,
+               TIME_FORMAT(a.appointment_time, '%H:%i') as formatted_time
+        FROM appointments a
+        JOIN users d ON d.id = a.doctor_id
+        WHERE a.id = %s AND (a.patient_id = %s OR a.doctor_id = %s)
+        AND a.status IN ('booked', 'in_progress')
+        AND a.telemedicine = 1
+    """
+    appt = q(query, (appointment_id, session['user']['id'], session['user']['id']), fetchone=True)
+
+    if not appt:
+        flash("Invalid appointment or not a telemedicine appointment")
+        return redirect(url_for("dashboard_patient_view" if session['user']['role'] == 'patient' else "dashboard_doctor_view"))
+
+    room_id = f"hospital-{appointment_id}-{hashlib.sha256(str(appt['formatted_date'] + appt['formatted_time']).encode()).hexdigest()[:10]}"
+
+    return render_template('video_call.html',
+                     doctor_name=appt['doctor_name'],
+                     appointment_date=appt['formatted_date'],
+                     appointment_time=appt['formatted_time'],
+                     room_id=room_id)
 
 
-@app.route('/doctor/Check/<int:appointment_id>', methods=['POST'])
-def doctor_check(appointment_id):
-    cursor = conn.cursor()
-    cursor.execute("UPDATE appointments SET status = 'done' WHERE id = %s", (appointment_id,))
-    conn.commit()
-    cursor.close()
-    return redirect(url_for('dashboard_doctor_view'))
 
+@app.route("/start_call/<int:appointment_id>", methods=["POST"])
+@login_required
+@role_required("patient")
+def start_call(appointment_id):
+    
+    appt = q("""
+        SELECT a.*, d.name as doctor_name, d.phone as doctor_phone
+        FROM appointments a 
+        JOIN users d ON d.id = a.doctor_id 
+        WHERE a.id=%s AND a.patient_id=%s 
+        AND a.status IN ('booked', 'in_progress')
+    """, (appointment_id, session["user"]["id"]), fetchone=True)
+    
+    if not appt:
+        flash("Invalid appointment")
+        return redirect(url_for("dashboard_patient_view"))
+    
+    return render_template('phone_call.html',
+        doctor_name=appt["doctor_name"],
+        doctor_phone=appt["doctor_phone"],
+        appointment_id=appointment_id
+    )
 
-@app.route('/admin/finalize/<int:appointment_id>', methods=['POST'])
+@app.route("/dashboard_doctor")
+@login_required
+@role_required("doctor")
+def dashboard_doctor_view():
+    did = session["user"]["id"]
+    cur = q("""
+        SELECT a.*, p.name AS patient_name, d.name AS doctor_name, a.telemedicine
+        FROM appointments a
+        JOIN users p ON p.id=a.patient_id
+        JOIN users d ON d.id=a.doctor_id
+        WHERE a.doctor_id=%s AND a.status IN ('booked','in_progress')
+        ORDER BY a.appointment_date, a.appointment_time
+    """, (did,))
+    appointments = cur.fetchall()
+    return render_template('dashboard_doctor.html', appointments=appointments)
+
+@app.route("/doctor/availability", methods=["GET","POST"])
+@login_required
+@role_required("doctor")
+def set_availability():
+    did = session["user"]["id"]
+    if request.method == "POST":
+        try:
+            print("Received POST request for doctor availability")
+            print("Form data:", request.form)
+            
+            q("DELETE FROM doctor_availability WHERE doctor_id=%s", (did,), commit=True)
+            print("Deleted existing availability for doctor", did)
+            
+            items = []
+            for day in ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"]:
+                st = request.form.get(f"{day}_start")
+                et = request.form.get(f"{day}_end")
+                print(f"Day {day}: start={st}, end={et}")
+                
+                if st and et: 
+                    try:
+                        
+                        st = datetime.strptime(st, "%H:%M").strftime("%H:%M:00")
+                        et = datetime.strptime(et, "%H:%M").strftime("%H:%M:00")
+                        items.append((did, day, st, et))
+                        print(f"Added slot for {day}: {st} - {et}")
+                    except ValueError as e:
+                        print(f"Error parsing time for {day}:", e)
+                        flash(f"Invalid time format for {day}")
+                        return redirect(url_for("set_availability"))
+            
+            if items:
+                try:
+                    print("Inserting availability items:", items)
+                    q("INSERT INTO doctor_availability (doctor_id,day_of_week,start_time,end_time) VALUES (%s,%s,%s,%s)", 
+                      items, many=True, commit=True)
+                    print("Successfully inserted availability")
+                    flash("Availability updated successfully.")
+                except Exception as e:
+                    print("Database error:", e)
+                    flash("Error saving availability. Please try again.")
+                    return redirect(url_for("set_availability"))
+            else:
+                print("No availability items to insert")
+                flash("Please set at least one day's availability.")
+            
+            print("Redirecting to dashboard")
+            return redirect(url_for("dashboard_doctor_view"))
+            
+        except Exception as e:
+            print("Unexpected error:", e)
+            flash("An error occurred. Please try again.")
+            return redirect(url_for("set_availability"))
+
+    current = q("SELECT day_of_week, TIME_FORMAT(start_time, '%H:%i') as start_time, TIME_FORMAT(end_time, '%H:%i') as end_time FROM doctor_availability WHERE doctor_id=%s", (did,), fetchall=True) or []
+    availability = {row['day_of_week']: row for row in current}
+
+    form_html = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Set Availability</title>
+        <style>
+            body { font-family: system-ui, -apple-system, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #f5f7fa; }
+            .container { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+            h3 { margin-top: 0; color: #2c3e50; }
+            .day-row { display: flex; align-items: center; margin: 15px 0; padding: 10px; border-radius: 8px; background: #f8fafc; }
+            .day-label { flex: 0 0 80px; font-weight: bold; color: #2c3e50; }
+            .time-inputs { flex: 1; display: flex; align-items: center; gap: 10px; }
+            input[type="time"] { padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
+            .btn-group { margin-top: 20px; display: flex; gap: 10px; }
+            .btn { padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+            .btn-save { background: #2563eb; color: white; }
+            .btn-back { background: #64748b; color: white; }
+            .error { color: #dc2626; margin: 5px 0; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h3>Set Weekly Availability</h3>
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    {% for msg in messages %}
+                        <div class="error">{{ msg }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <form method="POST" action="{{ url_for('set_availability') }}" id="availForm">
+                {% for d in days %}
+                <div class="day-row">
+                    <div class="day-label">{{ d }}</div>
+                    <div class="time-inputs">
+                        <input name="{{ d }}_start" type="time" 
+                               value="{{ availability[d].start_time if d in availability else '' }}"
+                               id="{{ d }}_start">
+                        <span>to</span>
+                        <input name="{{ d }}_end" type="time" 
+                               value="{{ availability[d].end_time if d in availability else '' }}"
+                               id="{{ d }}_end">
+                    </div>
+                </div>
+                {% endfor %}
+                <div class="btn-group">
+                    <button type="submit" class="btn btn-save">Save Changes</button>
+                    <a href="{{ url_for('dashboard_doctor_view') }}" class="btn btn-back">Back</a>
+                </div>
+            </form>
+        </div>
+        <script>
+        const form = document.getElementById('availForm');
+        form.onsubmit = function(e) {
+            e.preventDefault(); // Prevent default submission
+            let valid = false;
+            let formData = new FormData(form);
+            
+            document.querySelectorAll('.day-row').forEach(row => {
+                const day = row.querySelector('.day-label').textContent.trim();
+                const start = row.querySelector('input[type="time"]:first-child').value;
+                const end = row.querySelector('input[type="time"]:last-child').value;
+                
+                console.log(`Checking ${day}: ${start} - ${end}`);
+                
+                if (start && end) {
+                    valid = true;
+                    if (start >= end) {
+                        alert('End time must be after start time for ' + day);
+                        return;
+                    }
+                }
+            });
+            
+            if (!valid) {
+                alert('Please set availability for at least one day');
+                return;
+            }
+            
+            // If validation passes, submit the form
+            console.log('Submitting form...');
+            form.submit();
+        };
+        </script>
+    </body>
+    </html>
+    """
+    return render_template_string(form_html, days=["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], availability=availability)
+
+@app.route("/doctor/in-progress/<int:appointment_id>", methods=["POST"])
+@login_required
+@role_required("doctor")
+def mark_in_progress(appointment_id):
+    did = session["user"]["id"]
+    q("UPDATE appointments SET status='in_progress' WHERE id=%s AND doctor_id=%s", (appointment_id, did))
+    log_action("doctor", did, f"Marked in_progress {appointment_id}")
+    return redirect(url_for("dashboard_doctor_view"))
+
+@app.route("/doctor/done/<int:appointment_id>", methods=["POST"])
+@login_required
+@role_required("doctor")
+def mark_done(appointment_id):
+    did = session["user"]["id"]
+    q("UPDATE appointments SET status='done', finalized=TRUE WHERE id=%s AND doctor_id=%s", (appointment_id, did))
+    log_action("doctor", did, f"Marked done {appointment_id}")
+    ap = q("SELECT p.email,p.name,d.name AS dname, a.appointment_date, a.appointment_time "
+           "FROM appointments a JOIN users p ON p.id=a.patient_id JOIN users d ON d.id=a.doctor_id WHERE a.id=%s", (appointment_id,)).fetchone()
+    if ap:
+        send_email(ap["email"], "Appointment Completed",
+                   f"Hi {ap['name']}, your appointment with Dr. {ap['dname']} on {ap['appointment_date']} {ap['appointment_time']} is marked done.")
+    return redirect(url_for("dashboard_doctor_view"))
+
+@app.route("/doctor/prescription/<int:appointment_id>", methods=["GET","POST"])
+@login_required
+@role_required("doctor")
+def prescription_form(appointment_id):
+    did = session["user"]["id"]
+    ap = q("""SELECT a.*, p.name AS patient_name, d.name AS doctor_name
+              FROM appointments a
+              JOIN users p ON p.id=a.patient_id
+              JOIN users d ON d.id=a.doctor_id
+              WHERE a.id=%s AND a.doctor_id=%s""", (appointment_id, did)).fetchone()
+    if not ap: 
+        flash("Not found")
+        return redirect(url_for("dashboard_doctor_view"))
+
+    pres = q("SELECT * FROM prescriptions WHERE appointment_id=%s", (appointment_id,)).fetchone()
+
+    if request.method == "POST":
+        diagnosis = request.form["diagnosis"]
+        medicines = request.form["medicines"]
+        if pres:
+            q("UPDATE prescriptions SET diagnosis=%s, medicines=%s WHERE id=%s", (diagnosis, medicines, pres["id"]))
+            pres_id = pres["id"]
+        else:
+            q("INSERT INTO prescriptions (appointment_id,diagnosis,medicines) VALUES (%s,%s,%s)", (appointment_id, diagnosis, medicines))
+            pres_id = q("SELECT LAST_INSERT_ID() AS id").fetchone()["id"]
+
+        pdf_path = None
+        try:
+            if REPORTLAB_AVAILABLE:
+                from gen_pdf import generate_prescription
+                print("Generating prescription PDF using reportlab...")
+                prescriptions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prescriptions')
+                if not os.path.exists(prescriptions_dir):
+                    os.makedirs(prescriptions_dir)
+                
+                pdf_path = os.path.join(prescriptions_dir, f"prescription_{pres_id}.pdf")
+                print(f"PDF will be saved to: {pdf_path}")
+                success = generate_prescription(
+                    pres_id=pres_id,
+                    patient_name=ap['patient_name'],
+                    doctor_name=ap['doctor_name'],
+                    diagnosis=diagnosis,
+                    medicines=medicines,
+                    output_path=pdf_path
+                )
+                
+                if not success:
+                    raise Exception("Failed to generate PDF")
+                print(f"PDF saved to: {pdf_path}")
+        except Exception as e:
+            print(f"Error generating PDF: {str(e)}")
+            pdf_path = None
+        
+        if pdf_path:
+            q("UPDATE prescriptions SET pdf_path=%s WHERE id=%s", (pdf_path, pres_id))
+
+        flash("Prescription saved.")
+        return redirect(url_for("dashboard_doctor_view"))
+
+    return render_template('prescription_form.html', appt=ap, pres=pres)
+
+@app.route("/prescriptions/<int:prescription_id>/download")
+@login_required
+def download_prescription(prescription_id):
+    try:
+        pres = q("SELECT p.*, a.patient_id, a.doctor_id FROM prescriptions p JOIN appointments a ON a.id=p.appointment_id WHERE p.id=%s", 
+                 (prescription_id,), fetchone=True)
+        
+        if not pres:
+            flash("Prescription not found.")
+            return redirect(request.referrer or url_for("home"))
+        
+        if not (session["user"]["id"] == pres["patient_id"] or 
+                session["user"]["id"] == pres["doctor_id"] or 
+                session["user"]["role"] == "admin"):
+            flash("Unauthorized to access this prescription.")
+            return redirect(url_for("home"))
+        
+        if not pres.get("pdf_path"):
+            flash("PDF path not found in database.")
+            return redirect(request.referrer or url_for("home"))
+        
+        prescriptions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prescriptions')
+        pdf_path = os.path.join(prescriptions_dir, os.path.basename(pres["pdf_path"]))
+        
+        if not os.path.exists(pdf_path):
+            flash("PDF file not found on server.")
+            return redirect(request.referrer or url_for("home"))
+            
+        return send_file(pdf_path, 
+                        as_attachment=True, 
+                        download_name=f"prescription_{prescription_id}.pdf",
+                        mimetype='application/pdf')
+                        
+    except Exception as e:
+        print(f"Error downloading prescription: {str(e)}")
+        flash("Error downloading prescription.")
+        return redirect(request.referrer or url_for("home"))
+
+@app.route("/dashboard_admin")
+@login_required
+@role_required("admin")
+def dashboard_admin_view():
+    kpi = {
+        "total": q("SELECT COUNT(*) c FROM appointments").fetchone()["c"],
+        "today": q("SELECT COUNT(*) c FROM appointments WHERE appointment_date=%s", (datetime.now().date(),)).fetchone()["c"],
+        "paid": q("SELECT COUNT(*) c FROM appointments WHERE paid=1").fetchone()["c"],
+        "emergency": q("SELECT COUNT(*) c FROM appointments WHERE emergency=1").fetchone()["c"],
+    }
+    by_dept = q("""
+        SELECT dpt.name AS department_name, COUNT(*) c
+        FROM appointments a
+        JOIN users doc ON doc.id=a.doctor_id
+        JOIN departments dpt ON dpt.id=doc.department_id
+        WHERE a.appointment_date BETWEEN DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND CURDATE()
+        GROUP BY dpt.name
+        ORDER BY c DESC
+    """).fetchall()
+    audits = q("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 20").fetchall()
+    return render_template('dashboard_admin.html', kpi=kpi, by_dept=by_dept, audits=audits)
+
+@app.route("/api/doctors")
+def api_doctors():
+    try:
+        department_id = request.args.get("department_id")
+        print(f"Fetching doctors for department_id: {department_id}")
+        
+        if not department_id:
+            print("No department_id provided")
+            return jsonify([])
+
+        query = """
+            SELECT u.id, u.name, CAST(u.fee AS DECIMAL(10,2)) as fee 
+            FROM users u 
+            WHERE u.role='doctor' 
+            AND u.department_id=%s 
+            ORDER BY u.name
+        """
+        print(f"Executing query: {query} with department_id={department_id}")
+        
+        doctors = q(query, (department_id,), fetchall=True) or []
+        
+        for doctor in doctors:
+            if doctor['fee'] is not None:
+                doctor['fee'] = float(doctor['fee'])
+        
+        print(f"Found {len(doctors)} doctors:", doctors)
+        return jsonify(doctors)
+    except Exception as e:
+        print(f"Error in api_doctors: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/availability")
+def api_availability():
+    try:
+        doctor_id = request.args.get("doctor_id")
+        if not doctor_id:
+            return jsonify({"error": "Doctor ID is required"}), 400
+
+        rows = q(
+            "SELECT day_of_week, TIME_FORMAT(start_time, '%H:%i') as start_time, TIME_FORMAT(end_time, '%H:%i') as end_time FROM doctor_availability WHERE doctor_id=%s",
+            (doctor_id,),
+            fetchall=True
+        ) or []
+
+        availability = {}
+        for r in rows:
+            availability[r['day_of_week']] = {
+                'start': r['start_time'],
+                'end': r['end_time']
+            }
+            print(f"Added availability for {r['day_of_week']}: {r['start_time']} - {r['end_time']}")
+        
+        print("Final availability data:", availability)
+        return jsonify(availability)
+    except Exception as e:
+        print(f"Error in api_availability: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/booked_slots")
+def api_booked_slots():
+    try:
+        doctor_id = request.args.get("doctor_id")
+        date = request.args.get("date")
+        if not doctor_id or not date:
+            return jsonify({"error": "Missing doctor_id or date"}), 400
+
+        rows = q(
+            "SELECT TIME_FORMAT(appointment_time, '%H:%i') as time FROM appointments WHERE doctor_id=%s AND appointment_date=%s AND status!='cancelled'",
+            (doctor_id, date),
+            fetchall=True
+        ) or []
+
+        slots = [r['time'] for r in rows]
+        print(f"Found booked slots for doctor {doctor_id} on {date}:", slots)
+        return jsonify(slots)
+    except Exception as e:
+        print(f"Error in api_booked_slots: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/slots")
+@login_required
+def api_slots():
+    try:
+        doctor_id = request.args.get("doctor_id")
+        date_str = request.args.get("date")
+        if not doctor_id or not date_str:
+            return jsonify([])
+
+        date_obj = datetime.strptime(date_str, "%Y-%m-%d")
+        day_abbr = date_obj.strftime("%a")
+
+        avail = q("SELECT start_time,end_time FROM doctor_availability WHERE doctor_id=%s AND day_of_week=%s",
+                  (doctor_id, day_abbr), fetchall=True)
+        if not avail:
+            return jsonify([])
+
+        start = datetime.combine(date_obj, avail[0]["start_time"])
+        end = datetime.combine(date_obj, avail[0]["end_time"])
+        slots = []
+        while start + timedelta(minutes=30) <= end:
+            slots.append(start.strftime("%H:%M"))
+            start += timedelta(minutes=30)
+
+        booked = q("SELECT TIME_FORMAT(appointment_time, '%H:%i') as time FROM appointments WHERE doctor_id=%s AND appointment_date=%s AND status!='cancelled'",
+                   (doctor_id, date_str), fetchall=True)
+        booked_set = {b["time"] for b in booked}
+        available = [s for s in slots if s not in booked_set]
+        return jsonify(available)
+    except Exception as e:
+        print(f"Error in api_slots: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/pay/<int:appointment_id>", methods=["POST"])
+@login_required
+@role_required("patient")
+def pay_start(appointment_id):
+    try:
+        
+        ap = q("""SELECT a.*, d.name AS doctor_name, d.fee
+                  FROM appointments a JOIN users d ON d.id=a.doctor_id
+                  WHERE a.id=%s AND a.patient_id=%s""", 
+                (appointment_id, session["user"]["id"])).fetchone()
+                
+        if not ap:
+            flash("Appointment not found.")
+            return redirect(url_for("dashboard_patient_view"))
+
+        if ap.get("paid"):
+            flash("This appointment has already been paid for.")
+            return redirect(url_for("dashboard_patient_view"))
+
+        if not ap["fee"]:
+            flash("No fee is set for this appointment.")
+            return redirect(url_for("dashboard_patient_view"))
+
+        amount = int(ap["fee"] * 100)
+        return render_template('payment.html',
+                                   doctor_name=ap["doctor_name"], 
+                                   amount=amount,
+                                   appointment_id=appointment_id)
+            
+    except Exception as e:
+        print(f"Payment initialization error: {str(e)}")
+        flash("Error initializing payment. Please try again later.")
+        return redirect(url_for("dashboard_patient_view"))
+
+@app.route("/payment-success/<int:appointment_id>", methods=["POST"])
+@login_required
+@role_required("patient")
+def payment_success(appointment_id):
+    try:
+        
+        payment_method = request.form.get('payment_method', 'unknown')
+    
+        q("""UPDATE appointments 
+            SET paid = CASE 
+                    WHEN %s = 'cash' THEN 0 
+                    ELSE 1 
+                END,
+                payment_method = %s,
+                payment_date = NOW() 
+            WHERE id=%s AND patient_id=%s""", 
+          (payment_method, payment_method, appointment_id, session["user"]["id"]))
+        
+        if payment_method == 'cash':
+            flash("Payment pending. Please pay at the hospital.")
+        else:
+            flash(f"Payment successful via {payment_method}!")
+            
+        log_action("patient", session["user"]["id"], f"Payment processed for appointment {appointment_id} via {payment_method}")
+        return redirect(url_for("dashboard_patient_view"))
+        
+    except Exception as e:
+        print(f"Payment processing error: {str(e)}")
+        flash("Error processing payment. Please try again.")
+        return redirect(url_for("dashboard_patient_view"))
+
+@app.route("/admin/finalize/<int:appointment_id>", methods=["POST"])
+@login_required
+@role_required("admin")
 def finalize_appointment(appointment_id):
-    cursor = conn.cursor()
-    cursor.execute("UPDATE appointments SET finalized = TRUE WHERE id = %s", (appointment_id,))
-    conn.commit()
-    cursor.close()
-    return redirect(url_for('dashboard_admin_view'))
+    q("UPDATE appointments SET finalized=TRUE WHERE id=%s", (appointment_id,))
+    flash("Finalized.")
+    return redirect(url_for("dashboard_admin_view"))
+
+@app.route("/register_doctor", methods=["GET", "POST"])
+def register_doctor():
+    
+    departments = q("SELECT * FROM departments ORDER BY name", fetchall=True) or []
+
+    if request.method == "POST":
+        name = request.form["name"].strip()
+        email = request.form["email"].strip().lower()
+        password = request.form["password"]
+        phone = request.form["phone"].strip()
+        department_id = request.form["department_id"]
+        fee = request.form.get("fee", 0)
+
+        if q("SELECT id FROM users WHERE email=%s", (email,), fetchone=True):
+            flash("Email already registered.")
+            return render_template('register.html', departments=departments)
+
+        pwd_hash = generate_password_hash(password)
+
+        q(
+            "INSERT INTO users (role, name, email, password_hash, phone, department_id, fee) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            ("doctor", name, email, pwd_hash, phone, department_id, fee),
+            commit=True
+        )
+
+        flash("Doctor registered successfully!")
+        return redirect(url_for("login"))
+
+    return render_template_string(register_page, departments=departments)
+
+@app.route("/get_doctors/<int:dept_id>")
+def get_doctors(dept_id):
+    
+    doctors = q(
+        "SELECT id, name FROM users WHERE role='doctor' AND department_id=%s ORDER BY name",
+        (dept_id,),
+        fetchall=True
+    ) or []
+
+    return jsonify(doctors)
 
 
-if __name__ == '__main__':
+from flask import send_file, flash, redirect, url_for
+from gen_pdf import generate_prescription
+import os
+
+@app.route('/download_prescription/<int:pres_id>', methods=['GET'])
+def download_prescription_route(pres_id):
+    """
+    Generate and download a prescription PDF using data from the database.
+    """
+
+    try:
+        prescription = Prescription.query.get(pres_id)
+        if not prescription:
+            flash("Prescription not found!", "danger")
+            return redirect(url_for('dashboard'))
+        pdf_path = os.path.join(prescriptions_dir, f"prescription_{pres_id}.pdf")
+
+        success = generate_prescription(
+            pres_id=prescription.id,
+            patient_name=prescription.patient_name,
+            doctor_name=prescription.doctor_name,
+            diagnosis=prescription.diagnosis,
+            medicines=prescription.medicines,
+            output_path=pdf_path
+        )
+
+        if not success or not os.path.exists(pdf_path):
+            flash("Failed to generate prescription PDF!", "danger")
+            return redirect(url_for('dashboard'))
+        return send_file(pdf_path, as_attachment=True)
+
+    except Exception as e:
+        flash(f"Error while generating PDF: {e}", "danger")
+        return redirect(url_for('dashboard'))
+    
+if __name__ == "__main__":
     app.run(debug=True)

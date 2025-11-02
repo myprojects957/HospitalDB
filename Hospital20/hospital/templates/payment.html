@@ -70,6 +70,42 @@
         }
         .detail-label { color: #4a5568; }
         .detail-value { font-weight: 600; }
+
+
+        
+        .qr-section {
+            text-align: center;
+            margin-bottom: 15px;
+        }
+
+        .qr-image {
+            width: 150px;
+            height: 150px;
+            border: 2px solid #e5e7eb;
+            border-radius: 10px;
+            padding: 5px;
+        }
+
+        .qr-text {
+            font-size: 14px;
+            color: #4b5563;
+            margin-top: 5px;
+        }
+        .payment-btn {
+            display: block;
+            margin: 0 auto;
+            background-color: #2563eb;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+        }
+        .payment-btn:hover {
+            background-color: #1d4ed8;
+        }
+
+
     </style>
 </head>
 <body>
@@ -108,7 +144,12 @@
                 </button>
             </form>
 
-            <form action="{{ url_for('payment_success', appointment_id=appointment_id) }}" method="POST">
+            <form action="{{ url_for('payment_success', appointment_id=appointment_id) }}" method="POST" class="payment-form">
+                <div class="qr-section">
+                    <img src="{{ url_for('static', filename='image.png') }}" alt="QR Code" class="qr-image">
+                    <p class="qr-text">Scan QR to Pay</p>
+                </div>
+
                 <input type="hidden" name="payment_method" value="cash">
                 <button type="submit" class="payment-btn cash-btn">
                     <span>Pay at Hospital</span>

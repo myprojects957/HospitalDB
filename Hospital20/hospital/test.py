@@ -854,7 +854,7 @@ def prescription_form(appointment_id):
         pdf_path = None
         try:
             if REPORTLAB_AVAILABLE:
-                from gen_pdf import generate_prescription
+                from .gen_pdf import generate_prescription
                 print("Generating prescription PDF using reportlab...")
                 prescriptions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prescriptions')
                 if not os.path.exists(prescriptions_dir):
@@ -1175,7 +1175,7 @@ def get_doctors(dept_id):
 
 
 from flask import send_file, flash, redirect, url_for
-from gen_pdf import generate_prescription
+from .gen_pdf import generate_prescription
 import os
 
 @app.route('/download_prescription/<int:pres_id>', methods=['GET'])
@@ -1227,4 +1227,5 @@ def contact_doctor(doctor_id):
 if __name__ == "__main__":
 
     app.run(debug=True)
+
 

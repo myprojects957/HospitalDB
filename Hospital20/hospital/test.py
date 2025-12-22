@@ -63,7 +63,7 @@ except ImportError:
     pass
 
 try:
-    from hospital.gen_pdf import generate_prescription
+    from .gen_pdf import generate_prescription
     REPORTLAB_AVAILABLE = True
 except Exception:
     REPORTLAB_AVAILABLE = False
@@ -1227,3 +1227,4 @@ def contact_doctor(doctor_id):
 if __name__ == "__main__":
 
     app.run(debug=True)
+

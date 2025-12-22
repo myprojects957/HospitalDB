@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Dashboard</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;padding:30px;background:#f7fafc}
+    .top{display:flex;justify-content:space-between;align-items:center}
+    .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:16px}
+    .card{background:#fff;border-radius:10px;box-shadow:0 2px 8px rgba(0,0,0,.06);padding:14px}
+    table{width:100%;border-collapse:separate;border-spacing:0 10px;margin-top:20px}
+    thead th{background:#111827;color:#fff;padding:10px;border-radius:6px;text-align:left}
+    td{padding:10px;background:#fff}
+    a.btn{background:#e11d48;color:#fff;padding:8px 12px;border-radius:8px;text-decoration:none}
+  </style>
+</head>
+<body>
+  <div class="top">
+    <h2>Admin – </h2>
+    <a class="btn" href="{{ url_for('logout') }}">Logout</a>
+  </div>
+  <div class="kpis">
+    <div class="card"><b>Total Appointments</b><div style="font-size:28px">{{ kpi.total }}</div></div>
+    <div class="card"><b>Today</b><div style="font-size:28px">{{ kpi.today }}</div></div>
+    <div class="card"><b>Paid</b><div style="font-size:28px">{{ kpi.paid }}</div></div>
+    <div class="card"><b>Emergency</b><div style="font-size:28px">{{ kpi.emergency }}</div></div>
+  </div>
+
+  <h3>By Department (this week)</h3>
+  <table>
+    <thead><tr><th>Department</th><th>Appointments</th></tr></thead>
+    <tbody>
+      {% for r in by_dept %}
+      <tr><td>{{ r.department_name }}</td><td>{{ r.c }}</td></tr>
+      {% else %}
+      <tr><td colspan="2">No data</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h3>Recent Activity</h3>
+  <table>
+    <thead><tr><th>When</th><th>User Role</th><th>User ID</th><th>Action</th></tr></thead>
+    <tbody>
+      {% for a in audits %}
+      <tr><td>{{ a.timestamp }}</td><td>{{ a.role }}</td><td>{{ a.user_id }}</td><td>{{ a.action }}</td></tr>
+      {% else %}
+      <tr><td colspan="4">No logs</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

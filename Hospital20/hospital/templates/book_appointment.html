@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Book Appointment</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+
+<style>
+body {
+  font-family: Nunito, system-ui, Arial;
+  margin: 0;
+  padding: 30px;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: 
+    linear-gradient(rgba(255,255,255,0.6), rgba(255,255,255,0.6)),
+    url('https://shreya22dhumal.wordpress.com/wp-content/uploads/2015/09/hospital.jpg') 
+    no-repeat center center/cover;
+}
+
+.card {
+  background: rgba(255, 255, 255, 0.4);
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(15px);
+  padding: 24px;
+  max-width: 520px;
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+h2 {
+  text-align: center;
+  color: #222;
+  margin-top: 0;
+}
+
+label {
+  font-weight: 700;
+  display: block;
+  margin: 10px 0 6px;
+}
+
+select, input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #ccc;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.85);
+}
+
+.row {
+  display: flex;
+  gap: 12px;
+}
+
+.row > div {
+  flex: 1;
+}
+
+.btn {
+  width: 100%;
+  padding: 12px;
+  border: none;
+  border-radius: 10px;
+  background: #27ae60;
+  color: #fff;
+  font-weight: 800;
+  margin-top: 10px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  background: #2ecc71;
+}
+
+a {
+  display: inline-block;
+  margin-top: 10px;
+  text-decoration: none;
+  color: #2c3e50;
+  font-weight: bold;
+}
+a:hover {
+  color: #16a085;
+}
+</style>
+</head>
+
+<body>
+<div class="card">
+  <h2>Book Appointment</h2>
+
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <ul style="color:#e74c3c">{% for m in messages %}<li>{{m}}</li>{% endfor %}</ul>
+    {% endif %}
+  {% endwith %}
+
+  <form method="POST">
+    <label>Department</label>
+    <select id="dept" name="department_id" required>
+      <option value="">-- Select Department --</option>
+      {% for d in departments %}
+      <option value="{{ d.id }}">{{ d.name }}</option>
+      {% endfor %}
+    </select>
+
+    <label>Doctor</label>
+    <select id="doctor" name="doctor_id" required>
+      <option value="">-- Select Doctor --</option>
+    </select>
+
+    <div class="row">
+      <div>
+        <label>Date</label>
+        <input id="date" name="date" placeholder="YYYY-MM-DD" required>
+      </div>
+      <div>
+        <label>Time Slot</label>
+        <select id="time" name="time" required><option value="">-- Pick Time --</option></select>
+      </div>
+    </div>
+
+    <label>Emergency?</label>
+    <select name="emergency" required>
+      <option value="0">No</option>
+      <option value="1">Yes</option>
+    </select>
+
+    <label>Telemedicine?</label>
+    <select name="telemedicine" required>
+      <option value="0">No</option>
+      <option value="1">Yes</option>
+    </select>
+
+    <button class="btn" type="submit">Book</button>
+  </form>
+
+  <a href="{{ url_for('dashboard_patient_view') }}">← Back to Dashboard</a>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+
+<script>
+// Date picker
+flatpickr("#date", { dateFormat: "Y-m-d", minDate: "today" });
+
+const dept = document.getElementById('dept');
+const docSel = document.getElementById('doctor');
+const dateIn = document.getElementById('date');
+const timeSel = document.getElementById('time');
+
+let doctorAvailability = {};
+
+
+// ✅ 1. LOAD DOCTORS BASED ON DEPARTMENT
+dept.addEventListener('change', async () => {
+  docSel.innerHTML = '<option value="">-- Select Doctor --</option>';
+  timeSel.innerHTML = '<option value="">-- Pick Time --</option>';
+  doctorAvailability = {};
+
+  if (!dept.value) return;
+
+  try {
+    const res = await fetch(`/api/doctors?department_id=${dept.value}`);
+    const doctors = await res.json();
+
+    if (!Array.isArray(doctors)) {
+      docSel.innerHTML = '<option value="">Error loading doctors</option>';
+      return;
+    }
+
+    if (doctors.length === 0) {
+      docSel.innerHTML = '<option>No doctors available</option>';
+      return;
+    }
+
+    doctors.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.id;
+      opt.textContent = `Dr. ${d.name} (₹${d.fee || 0})`;
+      docSel.appendChild(opt);
+    });
+
+  } catch (error) {
+    docSel.innerHTML = '<option>Error loading doctors</option>';
+  }
+});
+
+
+// ✅ 2. LOAD DOCTOR AVAILABILITY
+docSel.addEventListener('change', async () => {
+  doctorAvailability = {};
+  dateIn.value = "";   // ✅ reset date so old slots don’t show
+  timeSel.innerHTML = '<option value="">-- Pick Time --</option>';
+
+  if (!docSel.value) return;
+
+  try {
+    const res = await fetch(`/api/availability?doctor_id=${docSel.value}`);
+    const data = await res.json();
+    doctorAvailability = data;
+
+  } catch (error) {
+    console.error('Error fetching doctor availability:', error);
+  }
+});
+
+
+// ✅ 3. LOAD TIME SLOTS
+async function loadSlots() {
+  timeSel.innerHTML = '<option value="">-- Pick Time --</option>';
+
+  const doctorId = docSel.value;
+  const date = dateIn.value;
+
+  if (!doctorId || !date) return;
+
+  const dateObj = new Date(date);
+  const dayAbbr = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(dateObj);
+
+  const avail = doctorAvailability[dayAbbr];
+
+  if (!avail || !avail.start || !avail.end) {
+    timeSel.innerHTML = '<option>Doctor not available</option>';
+    return;
+  }
+
+  // Create time slots
+  let slots = [];
+  const [sh, sm] = avail.start.split(':').map(Number);
+  const [eh, em] = avail.end.split(':').map(Number);
+
+  let start = new Date(date);
+  let end = new Date(date);
+
+  start.setHours(sh, sm, 0, 0);
+  end.setHours(eh, em, 0, 0);
+
+  if (start >= end) {
+    timeSel.innerHTML = '<option>Invalid working hours</option>';
+    return;
+  }
+
+  while (start < end) {
+    const t = start.toTimeString().slice(0, 5);
+    slots.push(t);
+    start.setMinutes(start.getMinutes() + 30);
+  }
+
+  // ✅ Fetch booked slots
+  const res = await fetch(`/api/booked_slots?doctor_id=${doctorId}&date=${date}`);
+  let booked = await res.json();
+
+  // supports both ["09:00"] and [{"time": "09:00"}]
+  booked = booked.map(x => x.time || x);
+
+  // remove booked ones
+  slots = slots.filter(s => !booked.includes(s));
+
+  if (slots.length === 0) {
+    timeSel.innerHTML = '<option>No slots available</option>';
+  } else {
+    slots.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = s;
+      timeSel.appendChild(opt);
+    });
+  }
+}
+
+dateIn.addEventListener('change', loadSlots);
+</script>
+
+</body>
+</html>

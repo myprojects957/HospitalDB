@@ -17,7 +17,9 @@ import mysql.connector
 from werkzeug.security import generate_password_hash, check_password_hash
 
 import pymysql
+import stripe
 
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 mysql_user = os.getenv("MYSQL_USER", "avnadmin")
 mysql_password = os.getenv("MYSQL_PASSWORD", "AVNS_olPiVJTGPWoGFJSMGPc")
 mysql_host = os.getenv("MYSQL_HOST", "mysql-18ab8524-hospitalapp.k.aivencloud.com")
@@ -63,7 +65,7 @@ except ImportError:
     pass
 
 try:
-    from .gen_pdf import generate_prescription
+    from gen_pdf import generate_prescription
     REPORTLAB_AVAILABLE = True
 except Exception:
     REPORTLAB_AVAILABLE = False
@@ -489,6 +491,7 @@ def register():
 @role_required("patient")
 def dashboard_patient_view():
     pid = session["user"]["id"]
+
     cur = q("""
         SELECT a.*, d.name AS doctor_name, dp.name AS department_name,
                (SELECT id FROM prescriptions p WHERE p.appointment_id=a.id LIMIT 1) AS prescription_id,
@@ -497,9 +500,10 @@ def dashboard_patient_view():
         JOIN users d ON d.id=a.doctor_id
         LEFT JOIN departments dp ON dp.id=d.department_id
         LEFT JOIN users u ON u.id=a.doctor_id
-        WHERE a.patient_id=%s
+        WHERE a.patient_id=%s AND a.deleted=0
         ORDER BY a.appointment_date DESC, a.appointment_time DESC
     """, (pid,))
+
     appointments = cur.fetchall()
     return render_template('dashboard_patient.html', appointments=appointments)
 
@@ -579,10 +583,30 @@ def book():
 @login_required
 @role_required("patient")
 def cancel_appointment(appointment_id):
-    pid = session["user"]["id"]
-    q("UPDATE appointments SET status='cancelled' WHERE id=%s AND patient_id=%s", (appointment_id, pid))
-    log_action("patient", pid, f"Cancelled appointment {appointment_id}")
-    flash("Appointment cancelled.")
+
+    ap = q("""
+        SELECT paid, status
+        FROM appointments
+        WHERE id=%s AND patient_id=%s AND deleted=0
+    """, (appointment_id, session["user"]["id"]), fetchone=True)
+
+    if not ap:
+        flash("Appointment not found")
+        return redirect(url_for("dashboard_patient_view"))
+
+    if ap["paid"]:
+        flash("Paid appointment cannot be cancelled")
+        return redirect(url_for("dashboard_patient_view"))
+
+    q("""
+        UPDATE appointments
+        SET status='cancelled',
+            deleted=1,
+            cancelled_at=NOW()
+        WHERE id=%s
+    """, (appointment_id,), commit=True)
+
+    flash("Appointment cancelled successfully")
     return redirect(url_for("dashboard_patient_view"))
 
 @app.route("/start_video_call/<int:appointment_id>", methods=["POST"])
@@ -806,23 +830,27 @@ def set_availability():
 @login_required
 @role_required("doctor")
 def mark_in_progress(appointment_id):
-    did = session["user"]["id"]
-    q("UPDATE appointments SET status='in_progress' WHERE id=%s AND doctor_id=%s", (appointment_id, did))
-    log_action("doctor", did, f"Marked in_progress {appointment_id}")
+
+    q("""
+        UPDATE appointments
+        SET status='in_progress'
+        WHERE id=%s AND doctor_id=%s AND deleted=0
+    """, (appointment_id, session["user"]["id"]), commit=True)
+
     return redirect(url_for("dashboard_doctor_view"))
 
 @app.route("/doctor/done/<int:appointment_id>", methods=["POST"])
 @login_required
 @role_required("doctor")
 def mark_done(appointment_id):
-    did = session["user"]["id"]
-    q("UPDATE appointments SET status='done', finalized=TRUE WHERE id=%s AND doctor_id=%s", (appointment_id, did))
-    log_action("doctor", did, f"Marked done {appointment_id}")
-    ap = q("SELECT p.email,p.name,d.name AS dname, a.appointment_date, a.appointment_time "
-           "FROM appointments a JOIN users p ON p.id=a.patient_id JOIN users d ON d.id=a.doctor_id WHERE a.id=%s", (appointment_id,)).fetchone()
-    if ap:
-        send_email(ap["email"], "Appointment Completed",
-                   f"Hi {ap['name']}, your appointment with Dr. {ap['dname']} on {ap['appointment_date']} {ap['appointment_time']} is marked done.")
+
+    q("""
+        UPDATE appointments
+        SET status='done'
+        WHERE id=%s AND doctor_id=%s AND deleted=0
+    """, (appointment_id, session["user"]["id"]), commit=True)
+
+    flash("Appointment completed")
     return redirect(url_for("dashboard_doctor_view"))
 
 @app.route("/doctor/prescription/<int:appointment_id>", methods=["GET","POST"])
@@ -854,7 +882,7 @@ def prescription_form(appointment_id):
         pdf_path = None
         try:
             if REPORTLAB_AVAILABLE:
-                from .gen_pdf import generate_prescription
+                from gen_pdf import generate_prescription
                 print("Generating prescription PDF using reportlab...")
                 prescriptions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'prescriptions')
                 if not os.path.exists(prescriptions_dir):
@@ -1062,66 +1090,87 @@ def api_slots():
 @login_required
 @role_required("patient")
 def pay_start(appointment_id):
-    try:
-        
-        ap = q("""SELECT a.*, d.name AS doctor_name, d.fee
-                  FROM appointments a JOIN users d ON d.id=a.doctor_id
-                  WHERE a.id=%s AND a.patient_id=%s""", 
-                (appointment_id, session["user"]["id"])).fetchone()
-                
-        if not ap:
-            flash("Appointment not found.")
-            return redirect(url_for("dashboard_patient_view"))
 
-        if ap.get("paid"):
-            flash("This appointment has already been paid for.")
-            return redirect(url_for("dashboard_patient_view"))
+    ap = q("""
+        SELECT a.*, d.name AS doctor_name, d.fee
+        FROM appointments a
+        JOIN users d ON d.id = a.doctor_id
+        WHERE a.id=%s AND a.patient_id=%s AND a.paid=0
+    """, (appointment_id, session["user"]["id"]), fetchone=True)
 
-        if not ap["fee"]:
-            flash("No fee is set for this appointment.")
-            return redirect(url_for("dashboard_patient_view"))
-
-        amount = int(ap["fee"] * 100)
-        return render_template('payment.html',
-                                   doctor_name=ap["doctor_name"], 
-                                   amount=amount,
-                                   appointment_id=appointment_id)
-            
-    except Exception as e:
-        print(f"Payment initialization error: {str(e)}")
-        flash("Error initializing payment. Please try again later.")
+    if not ap:
+        flash("Invalid appointment or already paid")
         return redirect(url_for("dashboard_patient_view"))
+
+    amount = int(ap["fee"] * 100)  # Stripe uses paise
+
+    checkout_session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        mode="payment",
+        line_items=[{
+            "price_data": {
+                "currency": "inr",
+                "product_data": {
+                    "name": f"Doctor Consultation – Dr. {ap['doctor_name']}"
+                },
+                "unit_amount": amount,
+            },
+            "quantity": 1,
+        }],
+        metadata={
+            "appointment_id": appointment_id,
+            "patient_id": session["user"]["id"]
+        },
+        success_url=url_for(
+            "stripe_success",
+            appointment_id=appointment_id,
+            _external=True
+        ),
+        cancel_url=url_for(
+            "dashboard_patient_view",
+            _external=True
+        )
+    )
+
+    return redirect(checkout_session.url)
+
+@app.route("/stripe-success/<int:appointment_id>")
+@login_required
+@role_required("patient")
+def stripe_success(appointment_id):
+
+    q("""
+        UPDATE appointments
+        SET paid=1,
+            payment_status='completed',
+            payment_method='stripe',
+            payment_date=NOW()
+        WHERE id=%s AND patient_id=%s
+    """, (appointment_id, session["user"]["id"]), commit=True)
+
+    flash("Payment successful via Stripe 🎉")
+    return redirect(url_for("dashboard_patient_view"))
+
 
 @app.route("/payment-success/<int:appointment_id>", methods=["POST"])
 @login_required
 @role_required("patient")
 def payment_success(appointment_id):
-    try:
-        
-        payment_method = request.form.get('payment_method', 'unknown')
-    
-        q("""UPDATE appointments 
-            SET paid = CASE 
-                    WHEN %s = 'cash' THEN 0 
-                    ELSE 1 
-                END,
-                payment_method = %s,
-                payment_date = NOW() 
-            WHERE id=%s AND patient_id=%s""", 
-          (payment_method, payment_method, appointment_id, session["user"]["id"]))
-        
-        if payment_method == 'cash':
-            flash("Payment pending. Please pay at the hospital.")
-        else:
-            flash(f"Payment successful via {payment_method}!")
-            
-        log_action("patient", session["user"]["id"], f"Payment processed for appointment {appointment_id} via {payment_method}")
-        return redirect(url_for("dashboard_patient_view"))
-        
-    except Exception as e:
-        print(f"Payment processing error: {str(e)}")
-        flash("Error processing payment. Please try again.")
-        return redirect(url_for("dashboard_patient_view"))
+
+    payment_method = request.form.get("payment_method", "demo")
+
+    q("""
+        UPDATE appointments
+        SET paid=1,
+            payment_status='completed',
+            payment_method=%s,
+            payment_date=NOW()
+        WHERE id=%s AND patient_id=%s
+    """, (payment_method, appointment_id, session["user"]["id"]), commit=True)
+
+    flash("Payment successful")
+    return redirect(url_for("dashboard_patient_view"))
+
 
 @app.route("/admin/finalize/<int:appointment_id>", methods=["POST"])
 @login_required
@@ -1175,7 +1224,7 @@ def get_doctors(dept_id):
 
 
 from flask import send_file, flash, redirect, url_for
-from .gen_pdf import generate_prescription
+from gen_pdf import generate_prescription
 import os
 
 @app.route('/download_prescription/<int:pres_id>', methods=['GET'])
@@ -1225,7 +1274,4 @@ def contact_doctor(doctor_id):
     )
 
 if __name__ == "__main__":
-
     app.run(debug=True)
-
-

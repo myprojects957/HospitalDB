@@ -4,9 +4,11 @@ gunicorn==21.2.0
 python-dotenv==1.0.1
 
 APScheduler==3.10.4
-SQLAlchemy<2.0      # 👈 VERY IMPORTANT
+SQLAlchemy<2.0    
 PyMySQL==1.1.0
 mysql-connector-python==8.3.0
 
 Flask-Mail==0.9.1
 reportlab==4.0.4
+
+stripe==8.8.0    

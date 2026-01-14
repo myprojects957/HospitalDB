@@ -507,6 +507,26 @@ def dashboard_patient_view():
     appointments = cur.fetchall()
     return render_template('dashboard_patient.html', appointments=appointments)
 
+def cleanup_old_cancelled():
+    try:
+        q("""
+            DELETE FROM appointments
+            WHERE status='cancelled'
+              AND cancelled_at < NOW() - INTERVAL 30 DAY
+        """, commit=True)
+        print("Auto-clean: Old cancelled appointments removed")
+    except Exception as e:
+        print("Cleanup error:", e)
+
+if scheduler:
+    scheduler.add_job(
+        cleanup_old_cancelled,
+        trigger="cron",
+        hour=2,   # runs at 2 AM daily
+        id="cleanup_cancelled_jobs",
+        replace_existing=True
+    )
+
 @app.route("/book", methods=["GET","POST"])
 @login_required
 @role_required("patient")
@@ -956,12 +976,15 @@ def download_prescription(prescription_id):
 @login_required
 @role_required("admin")
 def dashboard_admin_view():
+
     kpi = {
         "total": q("SELECT COUNT(*) c FROM appointments").fetchone()["c"],
-        "today": q("SELECT COUNT(*) c FROM appointments WHERE appointment_date=%s", (datetime.now().date(),)).fetchone()["c"],
+        "today": q("SELECT COUNT(*) c FROM appointments WHERE appointment_date=%s",
+                   (datetime.now().date(),)).fetchone()["c"],
         "paid": q("SELECT COUNT(*) c FROM appointments WHERE paid=1").fetchone()["c"],
         "emergency": q("SELECT COUNT(*) c FROM appointments WHERE emergency=1").fetchone()["c"],
     }
+
     by_dept = q("""
         SELECT dpt.name AS department_name, COUNT(*) c
         FROM appointments a
@@ -971,8 +994,58 @@ def dashboard_admin_view():
         GROUP BY dpt.name
         ORDER BY c DESC
     """).fetchall()
+
+    cancelled = q("""
+        SELECT a.id, p.name AS patient_name, d.name AS doctor_name,
+               a.appointment_date, a.appointment_time, a.cancelled_at
+        FROM appointments a
+        JOIN users p ON p.id=a.patient_id
+        JOIN users d ON d.id=a.doctor_id
+        WHERE a.status='cancelled'
+        ORDER BY a.cancelled_at DESC
+    """).fetchall()
+
     audits = q("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 20").fetchall()
-    return render_template('dashboard_admin.html', kpi=kpi, by_dept=by_dept, audits=audits)
+
+    return render_template(
+        'dashboard_admin.html',
+        kpi=kpi,
+        by_dept=by_dept,
+        cancelled=cancelled,
+        audits=audits
+    )
+
+@app.route("/admin/hide-cancelled/<int:appointment_id>", methods=["POST"])
+@login_required
+@role_required("admin")
+def admin_hide_cancelled(appointment_id):
+
+    q("""
+        UPDATE appointments
+        SET deleted=1
+        WHERE id=%s AND status='cancelled'
+    """, (appointment_id,), commit=True)
+
+    flash("Cancelled appointment hidden from patient dashboard")
+    return redirect(url_for("admin_cancelled_appointments"))
+
+@app.route("/admin/cancelled-appointments")
+@login_required
+@role_required("admin")
+def admin_cancelled_appointments():
+
+    rows = q("""
+        SELECT a.id, p.name AS patient_name, d.name AS doctor_name,
+               a.appointment_date, a.appointment_time, a.cancelled_at
+        FROM appointments a
+        JOIN users p ON p.id = a.patient_id
+        JOIN users d ON d.id = a.doctor_id
+        WHERE a.status='cancelled'
+        ORDER BY a.cancelled_at DESC
+    """, fetchall=True)
+
+    return redirect(url_for("dashboard_admin_view"))
+
 
 @app.route("/api/doctors")
 def api_doctors():
@@ -1224,7 +1297,7 @@ def get_doctors(dept_id):
 
 
 from flask import send_file, flash, redirect, url_for
-from gen_pdf import generate_prescription
+from hospital.gen_pdf import generate_prescription
 import os
 
 @app.route('/download_prescription/<int:pres_id>', methods=['GET'])

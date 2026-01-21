@@ -13,4 +13,6 @@ reportlab==4.0.4
 
 stripe==8.8.0
 
-supabase==2.3.4
+supabase==2.5.1
+# Pin httpx to avoid proxy argument incompatibility in Supabase auth client
+httpx==0.27.2

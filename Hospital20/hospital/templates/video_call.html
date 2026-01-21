@@ -107,7 +107,6 @@
     };
     const api = new JitsiMeetExternalAPI(domain, options);
     
-    // Handle hangup event
     api.addEventListeners({
         readyToClose: () => {
             window.location.href = '{{ url_for('dashboard_patient_view' if session.user.role == 'patient' else 'dashboard_doctor_view') }}';

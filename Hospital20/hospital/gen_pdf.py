@@ -19,8 +19,6 @@ class PrescriptionPDF:
 
     def generate_prescription(self, data, output_path):
         c = canvas.Canvas(output_path, pagesize=A4)
-
-        # Header
         c.setFillColor(self.primary_color)
         c.rect(0, self.height - 140, self.width, 140, fill=True)
         c.setFillColor(colors.white)
@@ -29,21 +27,18 @@ class PrescriptionPDF:
         c.setFont("Helvetica", 16)
         c.drawString(self.margin, self.height - 85, "Professional Healthcare Services")
 
-        # Prescription Title
         c.setFillColor(self.secondary_color)
         c.rect(self.margin, self.height - 190, self.width - (2 * self.margin), 35, fill=True)
         c.setFillColor(colors.white)
         c.setFont("Helvetica-Bold", 20)
         c.drawString(self.margin + 10, self.height - 175, "Medical Prescription")
 
-        # Prescription Details
         c.setFillColor(self.text_color)
         c.setFont("Helvetica", 11)
         c.drawString(self.margin + 10, self.height - 230, f"Prescription ID: RX-{data['pres_id']}")
         c.drawString(self.margin + 200, self.height - 230, f"Date: {datetime.now().strftime('%B %d, %Y')}")
         c.drawString(self.margin + 400, self.height - 230, f"Time: {datetime.now().strftime('%I:%M %p')}")
 
-        # Patient Info
         info_box_y = self.height - 330
         c.setFillColor(self.primary_color)
         c.setFont("Helvetica-Bold", 12)
@@ -54,7 +49,6 @@ class PrescriptionPDF:
         c.drawString(self.margin + 10, info_box_y - 40, f"Consulting Doctor: {data['doctor_name']}")
         c.drawString(self.margin + 10, info_box_y - 60, f"Date of Visit: {datetime.now().strftime('%B %d, %Y')}")
 
-        # Diagnosis
         diag_y = info_box_y - 100
         c.setFillColor(self.primary_color)
         c.setFont("Helvetica-Bold", 12)
@@ -66,7 +60,6 @@ class PrescriptionPDF:
             c.drawString(self.margin + 10, y_offset, line)
             y_offset -= 15
 
-        # Medicines
         med_y = y_offset - 20
         c.setFillColor(self.primary_color)
         c.setFont("Helvetica-Bold", 12)
@@ -78,7 +71,6 @@ class PrescriptionPDF:
             c.drawString(self.margin + 10, y_offset, "• " + line)
             y_offset -= 15
 
-        # Footer
         footer_y = 50
         c.setFillColor(self.text_color)
         verification_id = hashlib.sha256(str(data['pres_id']).encode()).hexdigest()[:8]
@@ -100,3 +92,4 @@ def generate_prescription(pres_id, patient_name, doctor_name, diagnosis, medicin
         'medicines': medicines
     }
     return pdf_generator.generate_prescription(data, output_path)
+

@@ -171,8 +171,6 @@ def send_email(to, subject, body):
     except Exception:
         return False
 
-
-# Twilio SMS sender
 def send_sms(phone: str, message: str) -> bool:
     try:
         if requests is None:
@@ -258,21 +256,17 @@ SEED_SQL = [
 
 @app.route("/init_db")
 def init_db():
-    # Run your seed SQL if any
+  
     for query, data in SEED_SQL:
         try:
             q(query, data, many=True, commit=True)
         except Exception as e:
             print(f"Seed insert skipped: {e}")
-
-    # Delete old admin users (optional, if you want a clean reset)
     try:
         q("DELETE FROM users WHERE role='admin'", commit=True)
         print("Old admin users deleted successfully.")
     except Exception as e:
         print(f"Error deleting old admins: {e}")
-
-    # Check if admin already exists
     user = q(
         "SELECT id FROM users WHERE email=%s LIMIT 1",
         ("PankajaChavan@1965.com",),
@@ -350,8 +344,7 @@ def schedule_appointment_reminders(appointment_id):
             print(f"Title: {notification_data['title']}")
             print(f"Message: {notification_data['message']}")
             print("=== End Reminder Debug ===\n")
-            
-            # Email
+           
             if appointment_data.get('patient_email'):
                 email_body = (
                     f"Hi {appointment_data['patient_name']},\n\n"
@@ -365,7 +358,6 @@ def schedule_appointment_reminders(appointment_id):
                 else:
                     print("Reminder email failed")
 
-            # SMS (optional)
             if appointment_data.get('patient_phone'):
                 sms_msg = (
                     f"Reminder: Appt with Dr. {appointment_data['doctor_name']} "
@@ -497,14 +489,10 @@ def login():
     if request.method == "POST":
         email = request.form["email"].strip().lower()
         password = request.form["password"]
-
-        # 1️⃣ Check user exists locally
         user = q("SELECT * FROM users WHERE email=%s", (email,), fetchone=True)
         if not user or not check_password_hash(user["password_hash"], password):
             flash("Invalid credentials")
             return render_template("login.html")
-
-        # 2️⃣ Verify email using Supabase
         try:
             sb_auth = supabase.auth.sign_in_with_password({
                 "email": email,
@@ -514,20 +502,15 @@ def login():
             flash("Email not verified. Please check your inbox 📧")
             return render_template("login.html")
 
-        # 3️⃣ Block unverified emails
         if not sb_auth.user.email_confirmed_at:
             flash("Please verify your email before login 📩")
             return render_template("login.html")
-
-        # 4️⃣ Mark email verified locally (only once)
         if not user.get("email_verified"):
             q(
                 "UPDATE users SET email_verified=1 WHERE id=%s",
                 (user["id"],),
                 commit=True
             )
-
-        # 5️⃣ Login success
         session["user"] = user
         log_action(user["role"], user["id"], "login")
 
@@ -562,8 +545,6 @@ def register():
 
         fee_raw = request.form.get("fee")
         fee = float(fee_raw) if fee_raw else 0
-
-        # 1️⃣ Create user in Supabase (EMAIL VERIFICATION ENABLED)
         redirect_url = request.url_root.rstrip('/') + url_for('auth_callback')
         result = supabase.auth.sign_up({
             "email": email,
@@ -576,8 +557,6 @@ def register():
         if result.user is None:
             flash("Registration failed. Try again.")
             return redirect(url_for("register"))
-
-        # 2️⃣ Store user locally (but NOT verified yet)
         q("""
             INSERT INTO users (role, name, email, password_hash, department_id, fee, email_verified)
             VALUES (%s,%s,%s,%s,%s,%s,0)
@@ -600,21 +579,16 @@ def register():
 def auth_callback():
     """Handle Supabase email verification callback"""
     try:
-        # Get the token from URL parameters
         access_token = request.args.get('access_token')
         refresh_token = request.args.get('refresh_token')
         
         if access_token:
-            # Set the session with the tokens
             supabase.auth.set_session(access_token, refresh_token)
-            
-            # Get user info
             user_response = supabase.auth.get_user(access_token)
             
             if user_response and user_response.user:
                 email = user_response.user.email
-                
-                # Update local database to mark email as verified
+            
                 q("UPDATE users SET email_verified=1 WHERE email=%s", (email,), commit=True)
                 
                 flash("✅ Email verified successfully! You can now login.")
@@ -695,7 +669,7 @@ if scheduler:
     scheduler.add_job(
         cleanup_old_cancelled,
         trigger="cron",
-        hour=2,   # runs at 2 AM daily
+        hour=2,  
         id="cleanup_cancelled_jobs",
         replace_existing=True
     )
@@ -1511,8 +1485,6 @@ def contact_doctor(doctor_id):
     if not doctor:
         flash("Doctor not found.")
         return redirect(url_for("dashboard_patient_view"))
-    
-    # Pass both name and phone number to template
     return render_template(
         "contact_doctor.html",
         doctor_name=doctor["name"],
@@ -1521,4 +1493,5 @@ def contact_doctor(doctor_id):
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 

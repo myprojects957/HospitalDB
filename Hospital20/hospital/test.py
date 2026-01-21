@@ -18,6 +18,13 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 import pymysql
 import stripe
+from supabase import create_client
+load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 mysql_user = os.getenv("MYSQL_USER", "avnadmin")
@@ -62,7 +69,7 @@ except Exception:
 try:
     import requests
 except ImportError:
-    pass
+    requests = None
 
 try:
     from gen_pdf import generate_prescription
@@ -75,7 +82,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
 from apscheduler.executors.pool import ThreadPoolExecutor
 
-load_dotenv()
+
 
 app = Flask(__name__)
 
@@ -162,6 +169,39 @@ def send_email(to, subject, body):
         mail.send(msg)
         return True
     except Exception:
+        return False
+
+
+# Twilio SMS sender
+def send_sms(phone: str, message: str) -> bool:
+    try:
+        if requests is None:
+            print("SMS not available: requests not installed")
+            return False
+        
+        account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+        auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+        from_number = os.getenv("TWILIO_PHONE_NUMBER")
+        
+        if not all([account_sid, auth_token, from_number]):
+            print("SMS not configured: missing Twilio credentials")
+            return False
+
+        url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
+        payload = {
+            "From": from_number,
+            "To": phone,
+            "Body": message
+        }
+        
+        resp = requests.post(url, data=payload, auth=(account_sid, auth_token), timeout=10)
+        if resp.status_code < 300:
+            print(f"SMS sent successfully to {phone}")
+            return True
+        print(f"SMS send failed: status={resp.status_code} body={resp.text}")
+        return False
+    except Exception as e:
+        print(f"SMS send exception: {e}")
         return False
 
 
@@ -259,9 +299,9 @@ def init_db():
 def schedule_appointment_reminders(appointment_id):
     try:
         appt = q("""
-            SELECT a.*, d.name as doctor_name, p.id as patient_id, 
-                   p.reminders_enabled,
-                   p.email as patient_email, p.name as patient_name,
+                 SELECT a.*, d.name as doctor_name, p.id as patient_id, 
+                     p.reminders_enabled,
+                     p.email as patient_email, p.name as patient_name, p.phone as patient_phone,
                    DATE_FORMAT(a.appointment_date, '%Y-%m-%d') as formatted_date,
                    TIME_FORMAT(a.appointment_time, '%H:%i') as formatted_time
             FROM appointments a
@@ -288,6 +328,10 @@ def schedule_appointment_reminders(appointment_id):
         
         def send_appointment_reminder(appointment_data, reminder_type):
 
+            if not appointment_data.get('reminders_enabled'):
+                print(f"Reminders disabled for patient {appointment_data['patient_id']}")
+                return
+
             print("\n=== Appointment Reminder Debug ===")
             print(f"Processing reminder for appointment {appointment_data['id']}")
             print(f"Reminder type: {reminder_type}")
@@ -307,6 +351,31 @@ def schedule_appointment_reminders(appointment_id):
             print(f"Message: {notification_data['message']}")
             print("=== End Reminder Debug ===\n")
             
+            # Email
+            if appointment_data.get('patient_email'):
+                email_body = (
+                    f"Hi {appointment_data['patient_name']},\n\n"
+                    f"This is a reminder that your appointment with Dr. {appointment_data['doctor_name']} "
+                    f"is scheduled {'in 2 hours' if reminder_type == '2hour' else 'in 30 minutes'} "
+                    f"at {appointment_data['formatted_time']} on {appointment_data['formatted_date']}.\n\n"
+                    "Please arrive a few minutes early."
+                )
+                if send_email(appointment_data['patient_email'], "Appointment Reminder", email_body):
+                    print("Reminder email sent")
+                else:
+                    print("Reminder email failed")
+
+            # SMS (optional)
+            if appointment_data.get('patient_phone'):
+                sms_msg = (
+                    f"Reminder: Appt with Dr. {appointment_data['doctor_name']} "
+                    f"{'in 2h' if reminder_type == '2hour' else 'in 30m'} at {appointment_data['formatted_time']}"
+                )
+                if send_sms(appointment_data['patient_phone'], sms_msg):
+                    print("Reminder SMS sent")
+                else:
+                    print("Reminder SMS failed or not configured")
+
             print(f"Browser notification prepared: {notification_data}")
             return notification_data
         
@@ -429,11 +498,36 @@ def login():
         email = request.form["email"].strip().lower()
         password = request.form["password"]
 
+        # 1️⃣ Check user exists locally
         user = q("SELECT * FROM users WHERE email=%s", (email,), fetchone=True)
         if not user or not check_password_hash(user["password_hash"], password):
             flash("Invalid credentials")
-            return render_template('login.html')
+            return render_template("login.html")
 
+        # 2️⃣ Verify email using Supabase
+        try:
+            sb_auth = supabase.auth.sign_in_with_password({
+                "email": email,
+                "password": password
+            })
+        except Exception:
+            flash("Email not verified. Please check your inbox 📧")
+            return render_template("login.html")
+
+        # 3️⃣ Block unverified emails
+        if not sb_auth.user.email_confirmed_at:
+            flash("Please verify your email before login 📩")
+            return render_template("login.html")
+
+        # 4️⃣ Mark email verified locally (only once)
+        if not user.get("email_verified"):
+            q(
+                "UPDATE users SET email_verified=1 WHERE id=%s",
+                (user["id"],),
+                commit=True
+            )
+
+        # 5️⃣ Login success
         session["user"] = user
         log_action(user["role"], user["id"], "login")
 
@@ -444,7 +538,7 @@ def login():
         else:
             return redirect(url_for("dashboard_patient_view"))
 
-    return render_template('login.html')
+    return render_template("login.html")
 
 @app.route("/logout")
 def logout():
@@ -457,34 +551,101 @@ def logout():
 
 @app.route("/register", methods=["GET", "POST"])
 def register():
-    
-    departments = q("SELECT * FROM departments ORDER BY name", fetchall=True) or []
 
     if request.method == "POST":
         role = request.form["role"]
-        name = request.form["name"].strip()
-        email = request.form["email"].strip().lower()
+        name = request.form["name"]
+        email = request.form["email"].lower()
         password = request.form["password"]
-        department_id = request.form.get("department_id") if role == "doctor" else None
-        fee = float(request.form.get("fee", 0)) if role == "doctor" else 0
+        department_raw = request.form.get("department_id")
+        department_id = int(department_raw) if department_raw else None
 
-        if q("SELECT id FROM users WHERE email=%s", (email,), fetchone=True):
-            flash("Email already registered")
-            return render_template('register.html', departments=departments)
+        fee_raw = request.form.get("fee")
+        fee = float(fee_raw) if fee_raw else 0
 
-        pwd_hash = generate_password_hash(password)
+        # 1️⃣ Create user in Supabase (EMAIL VERIFICATION ENABLED)
+        redirect_url = request.url_root.rstrip('/') + url_for('auth_callback')
+        result = supabase.auth.sign_up({
+            "email": email,
+            "password": password,
+            "options": {
+                "email_redirect_to": redirect_url
+            }
+        })
 
-        q(
-            "INSERT INTO users (role, name, email, password_hash, department_id, fee) "
-            "VALUES (%s,%s,%s,%s,%s,%s)",
-            (role, name, email, pwd_hash, department_id, fee),
-            commit=True
-        )
+        if result.user is None:
+            flash("Registration failed. Try again.")
+            return redirect(url_for("register"))
 
-        flash("Account created successfully!")
+        # 2️⃣ Store user locally (but NOT verified yet)
+        q("""
+            INSERT INTO users (role, name, email, password_hash, department_id, fee, email_verified)
+            VALUES (%s,%s,%s,%s,%s,%s,0)
+        """, (
+            role,
+            name,
+            email,
+            generate_password_hash(password),
+            department_id,
+            fee
+        ), commit=True)
+
+        flash("Verification email sent. Please check your inbox 📧")
         return redirect(url_for("login"))
 
-    return render_template('register.html', departments=departments)
+    departments = q("SELECT * FROM departments")
+    return render_template("register.html", departments=departments)
+
+@app.route("/auth/callback")
+def auth_callback():
+    """Handle Supabase email verification callback"""
+    try:
+        # Get the token from URL parameters
+        access_token = request.args.get('access_token')
+        refresh_token = request.args.get('refresh_token')
+        
+        if access_token:
+            # Set the session with the tokens
+            supabase.auth.set_session(access_token, refresh_token)
+            
+            # Get user info
+            user_response = supabase.auth.get_user(access_token)
+            
+            if user_response and user_response.user:
+                email = user_response.user.email
+                
+                # Update local database to mark email as verified
+                q("UPDATE users SET email_verified=1 WHERE email=%s", (email,), commit=True)
+                
+                flash("✅ Email verified successfully! You can now login.")
+                return redirect(url_for("login"))
+        
+        flash("Email verification failed. Please try again.")
+        return redirect(url_for("login"))
+        
+    except Exception as e:
+        app.logger.exception("Email verification callback error")
+        flash("Email verification failed. Please try again.")
+        return redirect(url_for("login"))
+
+@app.route("/resend-verification", methods=["GET", "POST"])
+def resend_verification():
+    email = (request.form.get("email") or request.args.get("email") or "").strip().lower()
+    if not email:
+        flash("Missing email address to resend verification")
+        return redirect(url_for("login"))
+
+    try:
+        supabase.auth.resend({
+            "email": email,
+            "type": "signup"
+        })
+        flash("Verification email resent 📩")
+    except Exception:
+        app.logger.exception("Failed to resend verification email")
+        flash("Could not resend verification email. Please try again.")
+
+    return redirect(url_for("login"))
 
 @app.route("/dashboard_patient")
 @login_required
@@ -506,6 +667,18 @@ def dashboard_patient_view():
 
     appointments = cur.fetchall()
     return render_template('dashboard_patient.html', appointments=appointments)
+
+@app.route('/get_reminder_preference', methods=['GET'])
+@login_required
+def get_reminder_preference():
+    try:
+        user = q("SELECT reminders_enabled FROM users WHERE id = %s",
+                (session['user']['id'],),
+                fetchone=True)
+        return jsonify({'enabled': bool(user.get('reminders_enabled', 0))})
+    except Exception as e:
+        print(f"Error getting reminder preference: {str(e)}")
+        return jsonify({'enabled': False})
 
 def cleanup_old_cancelled():
     try:
@@ -1297,7 +1470,7 @@ def get_doctors(dept_id):
 
 
 from flask import send_file, flash, redirect, url_for
-from hospital.gen_pdf import generate_prescription
+from gen_pdf import generate_prescription
 import os
 
 @app.route('/download_prescription/<int:pres_id>', methods=['GET'])
